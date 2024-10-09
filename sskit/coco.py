@@ -56,6 +56,22 @@ class LocSimCOCOeval(COCOeval):
         self.eval['f1_50'] = f1
         self.eval['scores_50'] = scores
 
+    def frame_accuracy(self, threshold):
+        rng = self.params.areaRng[self.params.areaRngLbl.index('all')]
+        iou = self.params.iouThrs == 0.5
+
+        ok = bad = 0
+        for e in self.evalImgs:
+            if e is None:
+                continue
+            if e['aRng'] == rng:
+                matches = (e['dtMatches'][iou] > -1)[0]
+                if (np.array(e['dtScores'])[matches] > threshold).sum() == len(e['gtIds']):
+                    ok += 1
+                else:
+                    bad += 1
+        return ok / (ok + bad)
+
     def summarize(self):
         super().summarize()
         if hasattr(self.params, 'score_threshold'):
@@ -64,8 +80,13 @@ class LocSimCOCOeval(COCOeval):
             i = self.eval['f1_50'].argmax()
             threshold = (self.eval['scores_50'][i] + self.eval['scores_50'][i+1]) / 2
         i = np.searchsorted(-self.eval['scores_50'], -threshold, 'right') - 1
-        stats = [self.eval['precision_50'][i], self.eval['recall_50'][i], self.eval['f1_50'][i], threshold]
+        stats = [self.eval['precision_50'][i], self.eval['recall_50'][i], self.eval['f1_50'][i], threshold, self.frame_accuracy(threshold)]
         self.stats = np.concatenate([self.stats, stats])
+
+        print(f'  Precision      @[ LocSim=0.5 | ScoreTh={threshold} ] = {stats[0]}')
+        print(f'  Recall         @[ LocSim=0.5 | ScoreTh={threshold} ] = {stats[1]}')
+        print(f'  F1             @[ LocSim=0.5 | ScoreTh={threshold} ] = {stats[2]}')
+        print(f'  Frame Accuracy @[ LocSim=0.5 | ScoreTh={threshold} ] = {stats[4]}')
 
 
 class BBoxLocSimCOCOeval(LocSimCOCOeval):
