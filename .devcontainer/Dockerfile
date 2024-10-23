@@ -41,3 +41,4 @@ RUN useradd -m -u $UID -g $GID -s /bin/bash -d /workspace/home $USER
 RUN echo $USER ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/$USER && chmod 0440 /etc/sudoers.d/$USER
 USER $USER
 
+

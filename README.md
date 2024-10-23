@@ -17,6 +17,21 @@
 
 ![](docs/front.jpg)
 
+Welcome to the Development Kit for the Spiideo SoccerNet SynLoc task and Challange. This kit is meant as a help to get started working with the data and the proposed task.
+
+## Installation
+The easiest way to install sskit is to use pip:
+```bash
+  pip install sskit
+```
+
+It is also possible to build manually:
+```bash
+  git clone https://github.com/Spiideo/sskit.git
+  cd sskit
+  python setup.py install
+```
+
 
 ## Coordinate Systems
 
