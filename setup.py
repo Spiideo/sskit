@@ -7,6 +7,7 @@ with open(os.path.join(os.path.dirname(__file__), "sskit", "version.py")) as fp:
     exec(fp.read())
 
 
+
 setup(
     name='sskit',
     description='Spiideo Scenes development Kit',
