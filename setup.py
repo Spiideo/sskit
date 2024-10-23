@@ -1,4 +1,5 @@
 from setuptools import setup
+import os
 
 # Read the version but avoid importing the __init__.py since
 # we might not have all dependencies installed
