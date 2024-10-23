@@ -11,6 +11,7 @@ setup(
     name='sskit',
     description='Spiideo Scenes development Kit',
     long_description='''
+    Development Kit for the Spiideo SoccerNet SynLoc task and Challange.
     ''',
     version=__version__,
     packages=['sskit'],
