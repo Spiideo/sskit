@@ -1,7 +1,12 @@
+
+<div align="center">
+
 # Spiideo SoccerNet SynLoc
 ## Single Frame World Coordinate Athlete Detection and Localization with Synthetic Data
 
 [[Paper](https://arxiv.org/)] [[Baseline](https://github.com/Spiideo/mmpose/tree/spiideo_scenes)] [[Devkit](https://github.com/Spiideo/sskit)]
+
+</div>
 
 ## Coordinate Systems
 
