@@ -6,13 +6,11 @@ import os
 with open(os.path.join(os.path.dirname(__file__), "sskit", "version.py")) as fp:
     exec(fp.read())
 
-
-
 setup(
     name='sskit',
     description='Spiideo Scenes development Kit',
     long_description='''
-    Development Kit for the Spiideo SoccerNet SynLoc task and Challange.
+        Development Kit for the Spiideo SoccerNet SynLoc task and Challange
     ''',
     version=__version__,
     packages=['sskit'],
