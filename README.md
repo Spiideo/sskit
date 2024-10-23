@@ -8,6 +8,16 @@
 
 </div>
 
+>**[Spiideo SoccerNet SynLoc - Single Frame World Coordinate Athlete Detection and Localization with Synthetic Data](https://arxiv.org/)**
+>
+> ...
+>
+>[*arxiv*](https://arxiv.org/)
+>
+
+![](docs/camera.jpg)
+
+
 ## Coordinate Systems
 
 There are several different coordinate systems used (se pictures below), and functions to convert points between them. The World coordinates are either 3D or 2D ground coordinates with the last coordinate assumed to be 0.
