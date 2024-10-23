@@ -15,7 +15,7 @@
 >[*arxiv*](https://arxiv.org/)
 >
 
-![](docs/camera.jpg)
+![](docs/front.jpg)
 
 
 ## Coordinate Systems
