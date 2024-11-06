@@ -4,7 +4,7 @@ from sskit import image_to_ground
 
 class LocSimCOCOeval(COCOeval):
     def get_img_pos(self, dt):
-        return [np.array(det['keypoints']).reshape(-1,3)[1, :2] for det in dt]
+        return [np.array(det['keypoints']).reshape(-1,3)[self.param.position_from_keypoint_index, :2] for det in dt]
 
     def computeIoU(self, imgId, catId):
         p = self.params
@@ -22,10 +22,13 @@ class LocSimCOCOeval(COCOeval):
             dt=dt[0:p.maxDets[-1]]
 
         img = self.cocoGt.loadImgs(int(imgId))[0]
-        img_pos_dt = np.array(self.get_img_pos(dt))
-        w, h = np.float32(img['width']), np.float32(img['height'])
-        nimg_pos_dt = ((img_pos_dt - (w/2, h/2)) / w).astype(np.float32)
-        bev_dt = image_to_ground(img['camera_matrix'], img['undist_poly'], nimg_pos_dt)[:, :2]
+        if hasattr(self.param, 'position_from_keypoint_index'):
+            img_pos_dt = np.array(self.get_img_pos(dt))
+            w, h = np.float32(img['width']), np.float32(img['height'])
+            nimg_pos_dt = ((img_pos_dt - (w/2, h/2)) / w).astype(np.float32)
+            bev_dt = image_to_ground(img['camera_matrix'], img['undist_poly'], nimg_pos_dt)[:, :2]
+        else:
+            bev_dt = np.array([det['position_on_pitch'] for det in dt])
         bev_gt = np.array([det['position_on_pitch'] for det in gt])
 
         aa, bb = np.meshgrid(bev_gt[:,0], bev_dt[:,0])

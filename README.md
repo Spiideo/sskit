@@ -36,7 +36,11 @@ It is also possible to build manually:
 
 Tools for evaluating a solution using the proposed mAP-LocSim metrics can be found in `sskit.coco`. It's an adaption of
 [`xtcocotools`](https://pypi.org/project/xtcocotools/), and is used in a similar way. Annotations and results are stored
-in coco format with the ground location of the objects projected into the image as the second keypoint. To evaluate
+in coco format with the ground location of the objects placed in the position_on_pitch key as a 2D pitch coordinate in
+meters. For convenience it is also possible to place the detected location in image space as one of the keypoints. That
+image location will then be projected onto the ground plane using the camera model. To do that set the
+`position_from_keypoint_index` parameter to the index of the keypoint containing the image location as indicated by
+the code line commented out. To evaluate
 results on the validation set stored in `validation_results.json`, use:
 ```python
   from xtcocotools.coco import COCO
@@ -46,6 +50,7 @@ results on the validation set stored in `validation_results.json`, use:
   coco_det = coco.loadRes("validation_results.json")
   coco_eval = LocSimCOCOeval(coco, coco_det, 'bbox', [0.089, 0.089], True)
   coco_eval.params.useSegm = None
+  # coco_eval.params.position_from_keypoint_index = 1
 
   coco_eval.evaluate()
   coco_eval.accumulate()
@@ -64,6 +69,7 @@ To get unbiased scores on the test-set, the score threshold found for the valida
   coco_det = coco.loadRes("test_results.json")
   coco_eval = LocSimCOCOeval(coco, coco_det, 'bbox', [0.089, 0.089], True)
   coco_eval.params.useSegm = None
+  # coco_eval.params.position_from_keypoint_index = 1
   coco_eval.params.score_threshold = score_threshold
 
   coco_eval.evaluate()
@@ -111,3 +117,9 @@ A more comprehensive example that was used to create the illustrations below can
 
 ### Ground Plane
 ![](docs/ground.jpg)
+
+### Citation
+
+If you use this code for your research, please cite:
+
+
