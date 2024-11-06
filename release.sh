@@ -9,5 +9,6 @@ if [ ! -z "`git diff`" ]; then
 fi
 
 git tag -a v$(python -c 'import setup; print(setup.__version__)')  -m release
+git push
 git push --tags
 
