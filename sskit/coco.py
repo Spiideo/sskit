@@ -4,7 +4,7 @@ from sskit import image_to_ground
 
 class LocSimCOCOeval(COCOeval):
     def get_img_pos(self, dt):
-        return [np.array(det['keypoints']).reshape(-1,3)[self.param.position_from_keypoint_index, :2] for det in dt]
+        return [np.array(det['keypoints']).reshape(-1,3)[self.params.position_from_keypoint_index, :2] for det in dt]
 
     def computeIoU(self, imgId, catId):
         p = self.params
