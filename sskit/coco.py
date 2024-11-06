@@ -22,7 +22,7 @@ class LocSimCOCOeval(COCOeval):
             dt=dt[0:p.maxDets[-1]]
 
         img = self.cocoGt.loadImgs(int(imgId))[0]
-        if hasattr(self.param, 'position_from_keypoint_index'):
+        if hasattr(self.params, 'position_from_keypoint_index'):
             img_pos_dt = np.array(self.get_img_pos(dt))
             w, h = np.float32(img['width']), np.float32(img['height'])
             nimg_pos_dt = ((img_pos_dt - (w/2, h/2)) / w).astype(np.float32)
