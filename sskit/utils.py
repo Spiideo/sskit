@@ -77,7 +77,7 @@ class Draw:
         self.pil_img.save(fn)
         return self
 
-def grid2d(w, h):
+def grid2d(w: int, h: int):
     grid_y = torch.linspace(0.0, h-1, h)
     grid_y = torch.reshape(grid_y, [h, 1])
     grid_y = grid_y.repeat(1, w)
