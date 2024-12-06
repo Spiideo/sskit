@@ -87,7 +87,7 @@ def project_on_ground(camera_matrix, dist_poly, image, width=70, height=120, res
     grid = world_to_image(camera_matrix, dist_poly, pkt).reshape(gnd.shape)
     return sample_image(image, grid[None])
 
-def undistort_image(dist_poly, image, zoom=1):
+def undistort_image(dist_poly, image, zoom:int=1):
     h, w = image.shape[-2:]
     grid = (grid2d(w, h) - torch.tensor([w/2, h/2])).to(image.device) / w / zoom
     dgrid = distort(dist_poly, grid)
