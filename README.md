@@ -4,7 +4,7 @@
 # Spiideo SoccerNet SynLoc
 ## Single Frame World Coordinate Athlete Detection and Localization with Synthetic Data
 
-[[Paper](https://arxiv.org/)] [[Baseline](https://github.com/Spiideo/mmpose/tree/spiideo_scenes)] [[Devkit](https://github.com/Spiideo/sskit)]
+[[Paper](https://arxiv.org/)] [[Baseline](https://github.com/Spiideo/mmpose/tree/spiideo_scenes)] [[Devkit](https://github.com/Spiideo/sskit)][[Data Download](https://research.spiideo.com/)]
 
 </div>
 
@@ -32,6 +32,21 @@ It is also possible to build manually:
   python setup.py install
 ```
 
+## Data Download
+The Spiideo SoccerNet SynLoc data can be downloaded from [research.spiideo.com](https://research.spiideo.com/) after registering. Unpack the .zip files in `data/SoccerNet/SpiideoSynLoc`. To automate the download, the [`SoccerNet`](https://pypi.org/project/SoccerNet/) pypi package can be used:
+
+```python
+from SoccerNet.Downloader import SoccerNetDownloader
+mySoccerNetDownloader=SoccerNetDownloader(LocalDirectory="data/SoccerNet")
+mySoccerNetDownloader.downloadDataTask(task="SpiideoSynLoc", split=["train","valid","test","challenge"])
+```
+
+This will download full resolution 4K images. To instead download the smaller fullhd versions, use:
+
+```python
+mySoccerNetDownloader.downloadDataTask(task="SpiideoSynLoc", split=["train","valid","test","challenge"], version="fullhd")
+```
+
 ## mAP-LocSim Evaluation
 
 Tools for evaluating a solution using the proposed mAP-LocSim metrics can be found in `sskit.coco`. It's an adaption of
@@ -46,7 +61,7 @@ results on the validation set stored in `validation_results.json`, use:
   from xtcocotools.coco import COCO
   from sskit.coco import LocSimCOCOeval
 
-  coco = COCO('data/annotations/val.json')
+  coco = COCO('data/SoccerNet/SpiideoSynLoc/annotations/val.json')
   coco_det = coco.loadRes("validation_results.json")
   coco_eval = LocSimCOCOeval(coco, coco_det, 'bbox', [0.089, 0.089], True)
   coco_eval.params.useSegm = None
@@ -65,7 +80,7 @@ To get unbiased scores on the test-set, the score threshold found for the valida
   from xtcocotools.coco import COCO
   from sskit.coco import LocSimCOCOeval
 
-  coco = COCO('data/annotations/test.json')
+  coco = COCO('data/SoccerNet/SpiideoSynLoc/annotations/test.json')
   coco_det = coco.loadRes("test_results.json")
   coco_eval = LocSimCOCOeval(coco, coco_det, 'bbox', [0.089, 0.089], True)
   coco_eval.params.useSegm = None
