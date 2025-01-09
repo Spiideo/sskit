@@ -7,12 +7,12 @@ from pathlib import Path
 def normalize(pkt, image_shape):
     pkt = torch.as_tensor(pkt)
     _, h, w = image_shape
-    return (pkt - torch.tensor([w/2, h/2])) / w
+    return (pkt - torch.tensor([(w-1)/2, (h-1)/2])) / w
 
 def unnormalize(pkt, image_shape):
     pkt = torch.as_tensor(pkt)
     _, h, w = image_shape
-    return w * pkt + torch.tensor([w/2, h/2])
+    return w * pkt + torch.tensor([(w-1)/2, (h-1)/2])
 
 def world_to_undistorted(camera_matrix, pkt):
     camera_matrix = torch.as_tensor(camera_matrix)
@@ -89,7 +89,7 @@ def project_on_ground(camera_matrix, dist_poly, image, width=70, height=120, res
 
 def undistort_image(dist_poly, image, zoom:int=1):
     h, w = image.shape[-2:]
-    grid = (grid2d(w, h) - torch.tensor([w/2, h/2])).to(image.device) / w / zoom
+    grid = (grid2d(w, h) - torch.tensor([(w-1)/2, (h-1)/2])).to(image.device) / w / zoom
     dgrid = distort(dist_poly, grid)
     return sample_image(image, dgrid[None])
 
@@ -114,7 +114,7 @@ def look_at(camera_matrix, dist_poly, image, center, zoom=1):
 
     rot = camera_matrix[:,:3] @ make_rotation_matrix_from_pan_tilt(pan, tilt).mT
     h, w = image.shape[-2:]
-    grid = (grid2d(w, h) - torch.tensor([w/2, h/2])) / w / zoom
+    grid = (grid2d(w, h) - torch.tensor([(w-1)/2, (h-1)/2])) / w / zoom
     rgrid = to_cartesian(torch.matmul(to_homogeneous(grid), rot.mT))
     dgrid = distort(dist_poly, rgrid)
     return sample_image(image, dgrid[None])

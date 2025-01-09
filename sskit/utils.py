@@ -91,6 +91,7 @@ def grid2d(w: int, h: int):
 
 def sample_image(image, grid):
     n, c, h, w = image.shape
-    scaled_grid = 2 * grid
-    scaled_grid[..., 1] *= w/h
-    return grid_sample(image, scaled_grid, align_corners=False)
+    scaled_grid = 2 * w * grid
+    scaled_grid[..., 0] /= (w - 1)
+    scaled_grid[..., 1] /= (h - 1)
+    return grid_sample(image, scaled_grid, align_corners=True)

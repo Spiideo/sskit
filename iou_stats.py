@@ -16,14 +16,14 @@ objects = json.loads((d / "objects.json").read_bytes())
 pkt = torch.tensor([obj['keypoints'].get('pelvis') for obj in objects.values() if obj['class'] == 'human'])
 pkt[:, 2] = 0
 npkt = world_to_image(camera_matrix, dist_poly, pkt)
-ipkt = npkt * w + torch.tensor([w/2, h/2])
+ipkt = npkt * w + torch.tensor([(w-1)/2, (h-1)/2])
 
 bbox = torch.tensor([obj['bounding_box_tight'] for obj in objects.values() if obj['class'] == 'human'])
 dets = torch.column_stack([bbox[:, :2].mean(1, dtype=torch.float32), bbox[:,3]])
 
 def bbox_to_bev(camera_matrix, undist_poly, bbox):
     dets = torch.column_stack([bbox[:, :2].mean(1, dtype=torch.float32), bbox[:,3]])
-    return image_to_ground(camera_matrix, undist_poly, (dets - torch.tensor([w/2, h/2])) / w)
+    return image_to_ground(camera_matrix, undist_poly, (dets - torch.tensor([(w-1)/2, (h-1)/2])) / w)
 
 def jitter_bbox(bbox, amount=0.5):
     bbox = torch.as_tensor(bbox, dtype=torch.float32)

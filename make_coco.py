@@ -59,8 +59,8 @@ def mkcoco(part):
             box_w = u1 - u0
             box_h = v1 - v0
             px, py, pz = obj['keypoints']['pelvis']
-            pu, pv = (world_to_image(camera_matrix, dist_poly, [px, py, pz]).numpy() * w + (w/2, h/2))
-            pu2, pv2 = (world_to_image(camera_matrix, dist_poly, [px, py, 0]).numpy() * w + (w/2, h/2))
+            pu, pv = (world_to_image(camera_matrix, dist_poly, [px, py, pz]).numpy() * w + ((w-1)/2, (h-1)/2))
+            pu2, pv2 = (world_to_image(camera_matrix, dist_poly, [px, py, 0]).numpy() * w + ((w-1)/2, (h-1)/2))
 
             if oid not in areas:
                 areas[oid] = int((segs==obj['segmentation_id']).sum())
