@@ -51,7 +51,7 @@ mySoccerNetDownloader.downloadDataTask(task="SpiideoSynLoc", split=["train","val
 
 Tools for evaluating a solution using the proposed mAP-LocSim metrics can be found in `sskit.coco`. It's an adaption of
 [`xtcocotools`](https://pypi.org/project/xtcocotools/), and is used in a similar way. Annotations and results are stored
-in coco format with the ground location of the objects placed in the position_on_pitch key as a 2D pitch coordinate in meters. A minimal results file, res.json, with 3 detections (two in the first image and one in the second) could look like this:
+in coco format with the ground location of the objects placed in the position_on_pitch key as a 3D pitch coordinate in meters. A minimal results file, res.json, with 3 detections (two in the first image and one in the second) could look like this:
 ```json
   [
     {
@@ -92,7 +92,7 @@ in coco format with the ground location of the objects placed in the position_on
     }
   ]
 ```
-It can be evaluated agains a minimal ground truth file, gt.json, that could look like this:
+It can be evaluated against a minimal ground truth file, gt.json, that could look like this:
 ```json
   {
     "annotations" : [
@@ -158,7 +158,7 @@ using the code:
 This will select a score threshold that maximizes the F1-score, which will make that score biased for the validation set.
 To get unbiased scores on the test-set, the score threshold found for the validation set should be used there:
 ```python
-  coco = COCO('gt.json')
+  coco = COCO('data/SoccerNet/SpiideoSynLoc/annotations/test.json')
   coco_det = coco.loadRes("res.json")
   coco_eval = LocSimCOCOeval(coco, coco_det, 'bbox')
   coco_eval.params.useSegm = None
