@@ -51,12 +51,127 @@ mySoccerNetDownloader.downloadDataTask(task="SpiideoSynLoc", split=["train","val
 
 Tools for evaluating a solution using the proposed mAP-LocSim metrics can be found in `sskit.coco`. It's an adaption of
 [`xtcocotools`](https://pypi.org/project/xtcocotools/), and is used in a similar way. Annotations and results are stored
-in coco format with the ground location of the objects placed in the position_on_pitch key as a 2D pitch coordinate in
-meters. For convenience it is also possible to place the detected location in image space as one of the keypoints. That
+in coco format with the ground location of the objects placed in the position_on_pitch key as a 2D pitch coordinate in meters. A minimal results file, res.json, with 3 detections (two in the first image and one in the second) could look like this:
+```json
+  [
+    {
+        "area" : 0,
+        "category_id" : 1,
+        "id" : 1,
+        "image_id" : 1,
+        "position_on_pitch" : [
+          1.2,
+          2,
+          0
+        ],
+        "score" : 0.91
+    },
+    {
+        "area" : 0,
+        "category_id" : 1,
+        "id" : 2,
+        "image_id" : 1,
+        "position_on_pitch" : [
+          5,
+          10,
+          0
+        ],
+        "score" : 0.85
+    },
+    {
+        "area" : 0,
+        "category_id" : 1,
+        "id" : 3,
+        "image_id" : 2,
+        "position_on_pitch" : [
+          10.2,
+          20,
+          0
+        ],
+        "score" : 0.83
+    }
+  ]
+```
+It can be evaluated agains a minimal ground truth file, gt.json, that could look like this:
+```json
+  {
+    "annotations" : [
+        {
+          "area" : 0,
+          "category_id" : 1,
+          "id" : 1,
+          "image_id" : 1,
+          "position_on_pitch" : [
+              1,
+              2,
+              0
+          ]
+        },
+        {
+          "area" : 0,
+          "category_id" : 1,
+          "id" : 2,
+          "image_id" : 2,
+          "position_on_pitch" : [
+              10,
+              20,
+              0
+          ]
+        }
+    ],
+    "categories" : [
+        {
+          "id" : 1,
+          "name" : "person"
+        }
+    ],
+    "images" : [
+        {
+          "id" : 1
+        },
+        {
+          "id" : 2
+        }
+    ]
+  }
+```
+using the code:
+  ```python
+  from xtcocotools.coco import COCO
+  from sskit.coco import LocSimCOCOeval
+
+  coco = COCO('gt.json')
+  coco_det = coco.loadRes("res.json")
+  coco_eval = LocSimCOCOeval(coco, coco_det, 'bbox')
+  coco_eval.params.useSegm = None
+
+  coco_eval.evaluate()
+  coco_eval.accumulate()
+  coco_eval.summarize()
+
+  map_locsim = coco_eval.stats[0]
+  frame_accuracy = coco_eval.stats[16]
+
+  score_threshold = coco_eval.stats[15]
+```
+
+This will select a score threshold that maximizes the F1-score, which will make that score biased for the validation set.
+To get unbiased scores on the test-set, the score threshold found for the validation set should be used there:
+```python
+  coco = COCO('gt.json')
+  coco_det = coco.loadRes("res.json")
+  coco_eval = LocSimCOCOeval(coco, coco_det, 'bbox')
+  coco_eval.params.useSegm = None
+  coco_eval.params.score_threshold = score_threshold
+
+  coco_eval.evaluate()
+  coco_eval.accumulate()
+  coco_eval.summarize()
+```
+
+For convenience it is also possible to place the detected location in image space as one of the keypoints. That
 image location will then be projected onto the ground plane using the camera model. To do that set the
-`position_from_keypoint_index` parameter to the index of the keypoint containing the image location as indicated by
-the code line commented out. To evaluate
-results on the validation set stored in `validation_results.json`, use:
+`position_from_keypoint_index` parameter to the index of the keypoint containing the image location. To evaluate results on the validation set stored in `validation_results.json`, use:
 ```python
   from xtcocotools.coco import COCO
   from sskit.coco import LocSimCOCOeval
@@ -65,31 +180,14 @@ results on the validation set stored in `validation_results.json`, use:
   coco_det = coco.loadRes("validation_results.json")
   coco_eval = LocSimCOCOeval(coco, coco_det, 'bbox', [0.089, 0.089], True)
   coco_eval.params.useSegm = None
-  # coco_eval.params.position_from_keypoint_index = 1
+  coco_eval.params.position_from_keypoint_index = 1
 
   coco_eval.evaluate()
   coco_eval.accumulate()
   coco_eval.summarize()
 
   score_threshold = coco_eval.stats[15]
-```
-
-This will select a score threshold that maximizes the F1-score, which will make that score biased for the validation set.
-To get unbiased scores on the test-set, the score threshold found for the validation set should be used there:
-```python
-  from xtcocotools.coco import COCO
-  from sskit.coco import LocSimCOCOeval
-
-  coco = COCO('data/SoccerNet/SpiideoSynLoc/annotations/test.json')
-  coco_det = coco.loadRes("test_results.json")
-  coco_eval = LocSimCOCOeval(coco, coco_det, 'bbox', [0.089, 0.089], True)
-  coco_eval.params.useSegm = None
-  # coco_eval.params.position_from_keypoint_index = 1
-  coco_eval.params.score_threshold = score_threshold
-
-  coco_eval.evaluate()
-  coco_eval.accumulate()
-  coco_eval.summarize()
+  score_threshold = coco_eval.stats[15]
 ```
 
 ## Camera model
