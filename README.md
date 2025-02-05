@@ -235,8 +235,8 @@ A more comprehensive example that was used to create the illustrations below can
 
 If you use this code or data, please cite:
 
-```
-@INPROCEEDINGS{ardo2025,
+```bibtex
+@inproceedings{ardo2025,
   author={Håkan Ardö and Mikael Nilsson and Anthony Cioppa and Floriane Magera and Silvio Giancola and Haochen Liu and Bernard Ghanem and Marc Van Droogenbroeck},
   booktitle={In Proceedings of the 20th International Joint Conference on Computer Vision, Imaging and Computer Graphics Theory and Applications - Volume 2: VISAPP},
   title={Spiideo SoccerNet SynLoc - Single Frame World Coordinate Athlete Detection and Localization with Synthetic Data},
