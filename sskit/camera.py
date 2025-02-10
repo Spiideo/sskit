@@ -79,19 +79,19 @@ def load_camera(directory: Path, poly_dim=8):
     rev_poly_t = torch.tensor(rev_poly).to(t)
     return camera_matrix_t, poly_t, rev_poly_t
 
-def project_on_ground(camera_matrix, dist_poly, image, width=70, height=120, resolution=10, center=(0,0), z=0):
+def project_on_ground(camera_matrix, dist_poly, image, width=70, height=120, resolution=10, center=(0,0), z=0, padding_mode: str = "zeros"):
     center = torch.as_tensor(center, device=image.device) - torch.tensor([width/2, height/2], device=image.device)
     gnd = grid2d(width * resolution, height * resolution).to(image.device) / resolution + center
     pkt = gnd.reshape(-1, 2)
     pkt = torch.cat([pkt, z * torch.ones_like(pkt[..., 0:1])], -1)
     grid = world_to_image(camera_matrix, dist_poly, pkt).reshape(gnd.shape)
-    return sample_image(image, grid[None])
+    return sample_image(image, grid[None], padding_mode=padding_mode)
 
-def undistort_image(dist_poly, image, zoom:int=1):
+def undistort_image(dist_poly, image, zoom:float=1.0, padding_mode: str = "zeros"):
     h, w = image.shape[-2:]
     grid = (grid2d(w, h) - torch.tensor([(w-1)/2, (h-1)/2])).to(image.device) / w / zoom
     dgrid = distort(dist_poly, grid)
-    return sample_image(image, dgrid[None])
+    return sample_image(image, dgrid[None], padding_mode=padding_mode)
 
 def get_pan_tilt_from_direction(direction):
     direction = torch.as_tensor(direction)

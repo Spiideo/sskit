@@ -89,9 +89,9 @@ def grid2d(w: int, h: int):
     grid = torch.stack([grid_x, grid_y], dim=-1)
     return grid
 
-def sample_image(image, grid):
+def sample_image(image, grid, padding_mode: str = "zeros"):
     n, c, h, w = image.shape
     scaled_grid = 2 * w * grid
     scaled_grid[..., 0] /= (w - 1)
     scaled_grid[..., 1] /= (h - 1)
-    return grid_sample(image, scaled_grid, align_corners=True)
+    return grid_sample(image, scaled_grid, align_corners=True, padding_mode=padding_mode)
