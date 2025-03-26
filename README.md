@@ -4,7 +4,7 @@
 # Spiideo SoccerNet SynLoc
 ## Single Frame World Coordinate Athlete Detection and Localization with Synthetic Data
 
-[[Paper](https://www.insticc.org/node/TechnicalProgram/VISIGRAPP/2025/presentationDetails/131082)] [[Baseline](https://github.com/Spiideo/mmpose/tree/spiideo_scenes)] [[Devkit](https://github.com/Spiideo/sskit)] [[Data Download](https://research.spiideo.com/)]
+[[Paper](https://www.insticc.org/node/TechnicalProgram/VISIGRAPP/2025/presentationDetails/131082)] [[Baseline](https://github.com/Spiideo/mmpose/tree/spiideo_scenes)] [[Devkit](https://github.com/Spiideo/sskit)] [[Data Download](https://research.spiideo.com/)] [[Leaderboard](https://paperswithcode.com/sota/object-localization-on-spiideo-soccernet)]
 
 </div>
 
