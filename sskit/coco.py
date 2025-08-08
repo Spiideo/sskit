@@ -86,10 +86,12 @@ class LocSimCOCOeval(COCOeval):
         stats = [self.eval['precision_50'][i], self.eval['recall_50'][i], self.eval['f1_50'][i], threshold, self.frame_accuracy(threshold)]
         self.stats = np.concatenate([self.stats, stats])
 
-        print(f'  Precision      @[ LocSim=0.5 | ScoreTh={threshold} ] = {stats[0]}')
-        print(f'  Recall         @[ LocSim=0.5 | ScoreTh={threshold} ] = {stats[1]}')
-        print(f'  F1             @[ LocSim=0.5 | ScoreTh={threshold} ] = {stats[2]}')
-        print(f'  Frame Accuracy @[ LocSim=0.5 | ScoreTh={threshold} ] = {stats[4]}')
+        print()
+        print(f'  Precision      @[ LocSim=0.5 | ScoreTh={threshold:5.3f} ]       = {stats[0]:5.3f}')
+        print(f'  Recall         @[ LocSim=0.5 | ScoreTh={threshold:5.3f} ]       = {stats[1]:5.3f}')
+        print(f'  F1             @[ LocSim=0.5 | ScoreTh={threshold:5.3f} ]       = {stats[2]:5.3f}')
+        print(f'  Frame Accuracy @[ LocSim=0.5 | ScoreTh={threshold:5.3f} ]       = {stats[4]:5.3f}')
+        print(f'  mAP-LocSim     @[ LocSim=0.50:0.95 | ScoreTh={threshold:5.3f} ] = {self.stats[0]:5.3f}')
 
 
 class BBoxLocSimCOCOeval(LocSimCOCOeval):
