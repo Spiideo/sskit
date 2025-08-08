@@ -3,6 +3,8 @@ import numpy as np
 from sskit import image_to_ground
 
 class LocSimCOCOeval(COCOeval):
+    locsim_tau = 1
+
     def get_img_pos(self, dt):
         return [np.array(det['keypoints']).reshape(-1,3)[self.params.position_from_keypoint_index, :2] for det in dt]
 
@@ -36,8 +38,7 @@ class LocSimCOCOeval(COCOeval):
         aa, bb = np.meshgrid(bev_gt[:,1], bev_dt[:,1])
         dist2 += (aa - bb) ** 2
 
-        tau = 1
-        locsim = np.exp(np.log(0.05) * dist2 / tau**2)
+        locsim = np.exp(np.log(0.05) * dist2 / self.locsim_tau**2)
         return locsim
 
     def accumulate(self, p=None):
