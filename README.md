@@ -35,8 +35,12 @@ It is also possible to build manually:
 ```
 
 ## Data Download
-The Spiideo SoccerNet SynLoc data can be downloaded from [research.spiideo.com](https://research.spiideo.com/) after registering. Unpack the .zip files in `data/SoccerNet/SpiideoSynLoc`. To automate the download, the [`SoccerNet`](https://pypi.org/project/SoccerNet/) pypi package can be used:
+The Spiideo SoccerNet SynLoc data can be downloaded from [research.spiideo.com](https://research.spiideo.com/) after registering. Unpack the .zip files in `data/SoccerNet/SpiideoSynLoc`. To automate the download, the [`SoccerNet`](https://pypi.org/project/SoccerNet/) pypi package can be used. It can be installed with:
+```bash
+  pip install SoccerNet
+```
 
+Then, the dataset can be downloaded using:
 ```python
 from SoccerNet.Downloader import SoccerNetDownloader
 mySoccerNetDownloader=SoccerNetDownloader(LocalDirectory="data/SoccerNet")
@@ -44,9 +48,14 @@ mySoccerNetDownloader.downloadDataTask(task="SpiideoSynLoc", split=["train","val
 ```
 
 This will download full resolution 4K images. To instead download the smaller fullhd versions, use:
-
 ```python
 mySoccerNetDownloader.downloadDataTask(task="SpiideoSynLoc", split=["train","valid","test","challenge"], version="fullhd")
+```
+
+The downloaded .zip archives then needs to be extracted:
+```bash
+  cd data/SoccerNet
+  for z in *.zip; do unzip $z; done
 ```
 
 ## mAP-LocSim Evaluation
