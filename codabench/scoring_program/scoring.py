@@ -29,11 +29,11 @@ def eval(tau, suffix):
     map_locsim = coco_eval.stats[0]
     precision, recall, f1, score_threshold, frame_accuracy = coco_eval.stats[12:]
     return {
-        'mAP-LocSim' + suffix: map_locsim,
-        'Precision' + suffix: precision,
-        'Recall' + suffix: recall,
-        'F1' + suffix: f1,
-        'FrameAcc' + suffix: frame_accuracy,
+        'mAP-LocSim' + suffix: map_locsim * 100,
+        'Precision' + suffix: precision * 100,
+        'Recall' + suffix: recall * 100,
+        'F1' + suffix: f1 * 100,
+        'FrameAcc' + suffix: frame_accuracy * 100,
     }
 
 scores = eval(1, '')
