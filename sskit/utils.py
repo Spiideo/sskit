@@ -41,6 +41,12 @@ def to_cartesian(pkt):
     pkt = torch.as_tensor(pkt)
     return pkt[..., :-1] / pkt[..., -1:]
 
+def projective(P, pkt):
+    return to_cartesian(to_homogeneous(pkt) @ P.T)
+
+def projective_inv(P, pkt):
+    return projective(torch.linalg.inv(P), pkt)
+
 class Draw:
     def __init__(self, img):
         self.pil_img = to_pil_image(img)
@@ -95,3 +101,8 @@ def sample_image(image, grid, padding_mode: str = "zeros"):
     scaled_grid[..., 0] /= (w - 1)
     scaled_grid[..., 1] /= (h - 1)
     return grid_sample(image, scaled_grid, align_corners=True, padding_mode=padding_mode)
+
+def sample_image_nonorm(image, grid, padding_mode: str = "zeros"):
+    h, w = image.shape[-2:]
+    grid = (grid - torch.tensor([(w-1)/2, (h-1)/2])) / w
+    return sample_image(image, grid, padding_mode)
