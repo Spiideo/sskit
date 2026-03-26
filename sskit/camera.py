@@ -12,7 +12,7 @@ def normalize(pkt, image_shape):
 def unnormalize(pkt, image_shape):
     pkt = torch.as_tensor(pkt)
     _, h, w = image_shape
-    return w * pkt + torch.tensor([(w-1)/2, (h-1)/2])
+    return w * pkt + torch.tensor([(w-1)/2, (h-1)/2], device=pkt.device)
 
 def world_to_undistorted(camera_matrix, pkt):
     camera_matrix = torch.as_tensor(camera_matrix)

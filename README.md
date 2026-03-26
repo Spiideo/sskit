@@ -202,6 +202,20 @@ image location will then be projected onto the ground plane using the camera mod
   score_threshold = coco_eval.stats[15]
 ```
 
+
+## Evaluation server
+There are is a [test evaluation server](https://www.codabench.org/competitions/10128/) that evaluates on the public test set and a [challenge evalutaion server](https://www.codabench.org/competitions/10155/) that evaluates on the private challenge set. Submitions to these servers consists of `.zip` archives with one file called `results.json` in the format specified above and one file called `metadata.json` which contains the score_threshold to be used, and optionally the position_from_keypoint_index parameter, if the second convienience format is used. That is:
+
+```json
+    {"score_threshold": 0.6848765313625336}
+```
+
+or
+
+```json
+    {"score_threshold": 0.6848765313625336, "position_from_keypoint_index": 1}
+```
+
 ## Camera model
 
 The camera model used in the dataset is a standard projective pihole camera model with radial distortion.
