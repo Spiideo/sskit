@@ -7,7 +7,7 @@ from pathlib import Path
 def normalize(pkt, image_shape):
     pkt = torch.as_tensor(pkt)
     _, h, w = image_shape
-    return (pkt - torch.tensor([(w-1)/2, (h-1)/2])) / w
+    return (pkt - torch.tensor([(w-1)/2, (h-1)/2], device=pkt.device)) / w
 
 def unnormalize(pkt, image_shape):
     pkt = torch.as_tensor(pkt)
