@@ -106,3 +106,38 @@ def sample_image_nonorm(image, grid, padding_mode: str = "zeros"):
     h, w = image.shape[-2:]
     grid = (grid - torch.tensor([(w-1)/2, (h-1)/2])) / w
     return sample_image(image, grid, padding_mode)
+
+def rotmat(theta_x=0.0, theta_y=0.0, theta_z=0.0):
+    theta_x = torch.as_tensor(theta_x, dtype=torch.float32)
+    theta_y = torch.as_tensor(theta_y, dtype=torch.float32, device=theta_x.device)
+    theta_z = torch.as_tensor(theta_z, dtype=torch.float32, device=theta_x.device)
+
+    c, s = torch.cos(theta_z), torch.sin(theta_z)
+    zero, one = torch.zeros_like(c), torch.ones_like(c)
+    Rz = torch.stack(
+        [
+            torch.stack([c, -s, zero]),
+            torch.stack([s, c, zero]),
+            torch.stack([zero, zero, one]),
+        ]
+    )
+
+    c, s = torch.cos(theta_y), torch.sin(theta_y)
+    Ry = torch.stack(
+        [
+            torch.stack([c, zero, -s]),
+            torch.stack([zero, one, zero]),
+            torch.stack([s, zero, c]),
+        ]
+    )
+
+    c, s = torch.cos(theta_x), torch.sin(theta_x)
+    Rx = torch.stack(
+        [
+            torch.stack([one, zero, zero]),
+            torch.stack([zero, c, -s]),
+            torch.stack([zero, s, c]),
+        ]
+    )
+
+    return Ry @ Rx @ Rz
