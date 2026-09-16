@@ -216,6 +216,28 @@ or
     {"score_threshold": 0.6848765313625336, "position_from_keypoint_index": 1}
 ```
 
+## Body Poses and Meshes
+
+The raw SoccerSceneV1 items only store the 55 SMPL-X joint positions of each player (`keypoints` in
+`objects.json`), the 10 betas (`smpl_shape`), the gender and the armature world matrix; no pose parameters.
+[`convert_pose.py`](convert_pose.py) recovers the pose by inverse kinematics against those joints
+(`human_body_prior` IK with the VPoser prior, followed by a prior-free LBFGS refinement to sub-millimetre
+residual), poses the gendered SMPL-X mesh and reads off the OpenPose landmarks that are mesh vertices
+(nose, eyes, ears, toes, heels). The 14 joint based BODY_25 points are copied verbatim from `objects.json`,
+using the smplify-x convention Neck = SMPL-X `neck` and MidHip = SMPL-X `pelvis`.
+
+* `openpose_body25.json` in OpenPose JSON style: for every human `person_id` (= `segmentation_id`),
+  `object_key`, `pose_keypoints_2d` (25 x `[u, v, 1.0]`, pixels in `rgb.jpg`) and `pose_keypoints_3d`
+  (25 x `[x, y, z, 1.0]`, world/pitch metres). The confidence is a constant 1.0.
+* `smplx_params.npz` with the fitted SMPL-X parameters (`betas`, `global_orient`, `body_pose`, `transl`,
+  `to_world`, fit residuals) so the meshes can be re-posed with the `smplx` package without refitting:
+  `world = to_world @ smplx(betas, global_orient, body_pose, transl)`.
+
+The 2D keypoints are computed with `unnormalize(world_to_image(...))`, i.e. with the principal point at
+`((w-1)/2, (h-1)/2)` (pixel centres), which is the convention used throughout `sskit`. Note that the `*_img`
+keypoints in `objects.json` were erroneously produced with the principal point at `(w/2, h/2)` and are
+therefore 0.7 px off; do not mix the two.
+
 ## Camera model
 
 The camera model used in the dataset is a standard projective pihole camera model with radial distortion.

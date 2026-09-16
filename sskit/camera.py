@@ -80,8 +80,10 @@ def load_camera(directory: Path, poly_dim=8):
     return camera_matrix_t, poly_t, rev_poly_t
 
 def project_on_ground(camera_matrix, dist_poly, image, width=70, height=120, resolution=10, center=(0,0), z=0, padding_mode: str = "zeros"):
-    center = torch.as_tensor(center, device=image.device) - torch.tensor([width/2, height/2], device=image.device)
-    gnd = grid2d(width * resolution, height * resolution).to(image.device) / resolution + center
+    gw, gh = width * resolution, height * resolution
+    # pixel centres: pixel ((gw-1)/2, (gh-1)/2) of the ground image maps to `center`
+    center = torch.as_tensor(center, device=image.device) - torch.tensor([(gw-1)/2, (gh-1)/2], device=image.device) / resolution
+    gnd = grid2d(gw, gh).to(image.device) / resolution + center
     pkt = gnd.reshape(-1, 2)
     pkt = torch.cat([pkt, z * torch.ones_like(pkt[..., 0:1])], -1)
     grid = world_to_image(camera_matrix, dist_poly, pkt).reshape(gnd.shape)

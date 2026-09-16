@@ -1,5 +1,5 @@
 from pathlib import Path
-from sskit import load_camera, imread, world_to_image, Draw, image_to_ground
+from sskit import load_camera, imread, world_to_image, Draw, image_to_ground, unnormalize
 import json
 import torch
 
@@ -14,7 +14,8 @@ pkt = torch.tensor([obj['keypoints'].get(name) for obj in objects.values() if ob
 pkt_img = torch.tensor([obj['keypoints'].get(name + '_img') for obj in objects.values() if obj['class'] == 'human'])
 
 npkt = world_to_image(camera_matrix, dist_poly, pkt)
-ipkt = npkt * w + torch.tensor([(w-1)/2, (h-1)/2])
+ipkt = unnormalize(npkt, img.shape)
+# The *_img keypoints were produced with the principal point at (w/2, h/2), so expect ~0.7 px here
 print(((ipkt - pkt_img)**2).sum(1).sqrt().max())
 drw = Draw(img)
 drw.circle(ipkt, 3, (255,0,0))
@@ -24,7 +25,7 @@ drw.circle(ipkt, 3, (255,0,0))
 
 pkt[:,2] = 0
 npkt_gnd = world_to_image(camera_matrix, dist_poly, pkt)
-ipkt_gnd = npkt_gnd * w + torch.tensor([(w-1)/2), (h-1)/2])
+ipkt_gnd = unnormalize(npkt_gnd, img.shape)
 drw.circle(ipkt_gnd, 3, (0,255,0))
 drw.line([ipkt, ipkt_gnd], (0,0,255), 2)
 
