@@ -38,11 +38,22 @@ Outputs written next to ``objects.json``:
     ``body_pose``, ``transl``, ``to_world`` ...) so meshes can be re-posed
     without refitting; see the ``readme`` entry inside the file.
 
+With ``--coco-out`` a collected COCO keypoint style file is written in
+addition (requires a single ``--list``). It reuses the ``images`` of the
+existing SynLoc bbox annotation file for the same split (``mini.json`` next to
+the output, or ``--coco-images``; list line ``i`` is image ``i``, verified via
+the camera matrix) and, per human, the ``id``, ``bbox``, ``area`` and
+``position_on_pitch`` of the matching bbox annotation, adding flat COCO
+``keypoints`` (25 x ``[u, v, 2]``), ``keypoints_3d`` (25 x ``[x, y, z, 1]``,
+world metres) and ``num_keypoints``. The category carries the BODY_25 keypoint
+names and skeleton.
+
 Usage::
 
     python convert_pose.py BorasArenaCenterLeft2 --show body25.png
     python convert_pose.py --list SoccerSceneV1/val_v1.txt --batch-size 2048
     python convert_pose.py --list SoccerSceneV1/train_v1.txt --shard 0/4
+    python convert_pose.py --list SoccerSceneV1/mini_v2.txt --coco-out SoccerNet/SpiideoSynLoc/annotations/person_keypoints_mini.json
 
 Assets (SMPL-X v1.1 npz models and VPoser V02_05) are looked up in
 ``--models-dir`` / ``$SMPLX_ASSETS_DIR`` / ``~/.cache/smplx`` and can be
@@ -50,9 +61,11 @@ downloaded with ``fetch_smplx_assets.py`` (or ``--fetch``).
 """
 import argparse
 import contextlib
+import gzip
 import io
 import json
 import os
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -506,6 +519,101 @@ def draw_show(item_dir: Path, body25_2d: np.ndarray, out: Path):
 
 
 # ---------------------------------------------------------------------------
+# Collected COCO keypoint file
+# ---------------------------------------------------------------------------
+
+def default_coco_images(coco_out: Path, list_file: Path) -> Path:
+    """SoccerNet/SpiideoSynLoc/annotations/<split>.json for a list file <split>_vN.txt."""
+    split = re.sub(r"_v\d+$", "", list_file.stem)
+    return coco_out.parent / f"{split}.json"
+
+
+def object_area(item_dir: Path, key: str, obj: dict, seg_cache: dict) -> int:
+    """Pixel area of a human, from areas_cache.json (written by make_coco.py) or the segmentation."""
+    areas_fn = item_dir / "areas_cache.json"
+    if "areas" not in seg_cache:
+        seg_cache["areas"] = json.loads(areas_fn.read_text()) if areas_fn.exists() else {}
+    if key not in seg_cache["areas"]:
+        if "seg" not in seg_cache:
+            seg_cache["seg"] = np.load(io.BytesIO(gzip.decompress((item_dir / "segmentations.npy.gz").read_bytes())))
+        seg_cache["areas"][key] = int((seg_cache["seg"] == obj["segmentation_id"]).sum())
+    return seg_cache["areas"][key]
+
+
+def write_coco(coco_out: Path, coco_images: Path, list_file: Path, items: List[Path]):
+    """Collect the per-item openpose_body25.json files of `items` (in list order) into one COCO
+    keypoint style file that references the images of the bbox annotation file `coco_images`."""
+    ref = json.loads(coco_images.read_text())
+    if len(ref["images"]) != len(items):
+        raise ValueError(f"{coco_images} has {len(ref['images'])} images but {list_file} has {len(items)} lines")
+    ref_anns: Dict[int, list] = {}
+    for a in ref["annotations"]:
+        ref_anns.setdefault(a["image_id"], []).append(a)
+
+    annotations, next_id = [], max((a["id"] for a in ref["annotations"]), default=-1) + 1
+    n_missing = n_unmatched = 0
+    for image, item in zip(ref["images"], items):
+        pose_fn = item / OUTPUT_JSON
+        if not pose_fn.exists():
+            n_missing += 1
+            continue
+        camera_matrix = np.load(item / "camera_matrix.npy")[:3]
+        if not np.allclose(camera_matrix, np.array(image["camera_matrix"]), atol=1e-5):
+            raise ValueError(f"camera matrix of image {image['id']} in {coco_images} does not match {item}; "
+                             "is the list file the one the bbox annotations were made from?")
+        objects = json.loads((item / "objects.json").read_text())
+        people = json.loads(pose_fn.read_text())["people"]
+        candidates = list(ref_anns.get(image["id"], []))
+        seg_cache: dict = {}
+        for person in people:
+            obj = objects[person["object_key"]]
+            pelvis = np.array(obj["keypoints"]["pelvis"])
+            match = next((a for a in candidates if np.allclose(a["keypoints_3d"][0][:3], pelvis, atol=1e-6)), None)
+            if match is not None:
+                candidates.remove(match)
+                ann = {k: match[k] for k in ("id", "position_on_pitch", "bbox", "area") if k in match}
+            else:
+                n_unmatched += 1
+                u0, u1, v0, v1 = obj.get("bounding_box_tighter", obj["bounding_box_tight"])
+                ann = dict(id=next_id, position_on_pitch=[float(pelvis[0]), float(pelvis[1])],
+                           bbox=[u0, v0, u1 - u0, v1 - v0], area=object_area(item, person["object_key"], obj, seg_cache))
+                next_id += 1
+            kp2 = np.array(person["pose_keypoints_2d"]).reshape(25, 3)
+            kp3 = np.array(person["pose_keypoints_3d"]).reshape(25, 4)
+            kp2[:, 2] = 2  # COCO visibility flag: labelled (visibility is not evaluated)
+            ann.update(
+                image_id=image["id"],
+                category_id=1,
+                iscrowd=0,
+                segmentation_id=person["person_id"][0],
+                keypoints=[round(float(x), 3) for x in kp2.ravel()],
+                keypoints_3d=[round(float(x), 5) for x in kp3.ravel()],
+                num_keypoints=25,
+            )
+            annotations.append(ann)
+
+    doc = dict(
+        images=ref["images"],
+        annotations=annotations,
+        categories=[dict(id=1, name="person", supercategory="person", keypoints=BODY25_NAMES,
+                         skeleton=[[a + 1, b + 1] for a, b in BODY25_PAIRS])],
+        info=dict(description="OpenPose BODY_25 keypoints for Spiideo SoccerNet SynLoc, generated by sskit/convert_pose.py "
+                              "from SMPL-X fits; keypoints are pixels (principal point ((w-1)/2, (h-1)/2)), keypoints_3d are "
+                              "world/pitch metres with a trailing 1; MidHip/Neck are the SMPL-X pelvis/neck joints.",
+                  source_list=str(list_file), bbox_annotations=str(coco_images)),
+    )
+    coco_out.parent.mkdir(parents=True, exist_ok=True)
+
+    def dump(path):
+        with open(path, "w") as fd:
+            json.dump(doc, fd)
+
+    atomic_write(coco_out, dump)
+    print(f"wrote {coco_out}: {len(doc['images'])} images, {len(annotations)} annotations "
+          f"({n_missing} items without pose output, {n_unmatched} humans without bbox annotation)", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
 # Driver
 # ---------------------------------------------------------------------------
 
@@ -575,11 +683,21 @@ def main(argv=None):
     parser.add_argument("--ik-iter", type=int, default=300, help="LBFGS iterations for the VPoser stage")
     parser.add_argument("--refine-iter", type=int, default=100, help="LBFGS iterations per refinement step")
     parser.add_argument("--show", help="write a debug PNG with the BODY_25 skeletons drawn on rgb.jpg (single item)")
+    parser.add_argument("--coco-out", type=Path, help="also collect all items of the (single) --list into one COCO keypoint "
+                        "style json that reuses the images of the SynLoc bbox annotation file of the same split")
+    parser.add_argument("--coco-images", type=Path, help="bbox annotation file whose images/annotations are reused "
+                        "(default: <coco-out dir>/<split>.json, split = list file name without _vN)")
     parser.add_argument("--dry-run", action="store_true", help="only list what would be processed")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
 
     torch.manual_seed(0)
+    if args.coco_out is not None:
+        if len(args.list) != 1 or args.item_dirs or args.shard:
+            parser.error("--coco-out requires exactly one --list and no item directories or --shard")
+        coco_images = args.coco_images or default_coco_images(args.coco_out, Path(args.list[0]))
+        if not coco_images.exists():
+            parser.error(f"bbox annotation file {coco_images} not found; pass --coco-images")
     items = iter_items(args)
     if not items:
         parser.error("no items given; pass item directories or --list")
@@ -595,8 +713,15 @@ def main(argv=None):
         else:
             skipped += 1
     print(f"{len(todo)} items to process, {skipped} already done, {missing} missing or incomplete", file=sys.stderr)
-    if args.dry_run or not todo:
+    if args.dry_run:
         return
+    if todo:
+        convert_items(todo, args)
+    if args.coco_out is not None:
+        write_coco(args.coco_out, coco_images, Path(args.list[0]), items)
+
+
+def convert_items(todo: List[Path], args):
 
     model_paths, vposer_dir = resolve_assets(args.models_dir, fetch=args.fetch)
     fitter = PoseFitter(model_paths, vposer_dir, torch.device(args.device), args.ik_iter, args.refine_iter)

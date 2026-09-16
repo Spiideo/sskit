@@ -229,6 +229,12 @@ using the smplify-x convention Neck = SMPL-X `neck` and MidHip = SMPL-X `pelvis`
 * `openpose_body25.json` in OpenPose JSON style: for every human `person_id` (= `segmentation_id`),
   `object_key`, `pose_keypoints_2d` (25 x `[u, v, 1.0]`, pixels in `rgb.jpg`) and `pose_keypoints_3d`
   (25 x `[x, y, z, 1.0]`, world/pitch metres). The confidence is a constant 1.0.
+* with `--coco-out`, additionally one collected COCO keypoint style file for the whole `--list`. It reuses the
+  `images` of the SynLoc bbox annotation file of the same split (`annotations/mini.json` for `mini_v2.txt`, or
+  `--coco-images`) and per human the `id`, `bbox`, `area` and `position_on_pitch` of the matching bbox annotation,
+  adding flat `keypoints` (25 x `[u, v, 2]`), `keypoints_3d` (25 x `[x, y, z, 1]`, world metres) and
+  `num_keypoints`; the category lists the BODY_25 keypoint names and skeleton. Annotation index 8 (MidHip) is the
+  same pelvis keypoint as in the bbox file, so `position_from_keypoint_index=8` works with `LocSimCOCOeval`.
 * `smplx_params.npz` with the fitted SMPL-X parameters (`betas`, `global_orient`, `body_pose`, `transl`,
   `to_world`, fit residuals) so the meshes can be re-posed with the `smplx` package without refitting:
   `world = to_world @ smplx(betas, global_orient, body_pose, transl)`.
