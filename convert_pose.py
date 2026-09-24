@@ -140,7 +140,7 @@ BODY25_NAMES = ["Nose", "Neck", "RShoulder", "RElbow", "RWrist", "LShoulder", "L
                 "RBigToe", "RSmallToe", "RHeel"]
 BODY25_PAIRS = [(1, 8), (1, 2), (1, 5), (2, 3), (3, 4), (5, 6), (6, 7), (8, 9), (9, 10),
                 (10, 11), (8, 12), (12, 13), (13, 14), (1, 0), (0, 15), (15, 17), (0, 16),
-                (16, 18), (14, 19), (19, 20), (14, 21), (11, 22), (22, 23), (11, 24)]
+                (16, 18), (14, 19), (19, 20), (14, 21), (11, 22), (11, 23), (11, 24)]
 
 # SMPL-X canonical frame (Y up, facing +Z) -> Blender armature frame (Z up).
 RX90 = np.array([[1, 0, 0, 0],

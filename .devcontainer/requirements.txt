@@ -3,14 +3,16 @@ ultralytics
 gitpython>=3.1.30
 setuptools>=70.0.0
 
-openmim
-mmengine
-mmcv==2.1.0
-mmdet>=3.1.0
-mmpose>=1.1.0
+# openmim
+# mmengine
+# mmcv==2.1.0
+# mmdet>=3.1.0
+# mmpose>=1.1.0
 importlib_metadata
 
 xtcocotools
+scipy
+
 # SMPL-X pose recovery for convert_pose.py (the Dockerfile builds wheels with
 # --no-deps, so transitive dependencies are listed explicitly)
 smplx==0.1.28

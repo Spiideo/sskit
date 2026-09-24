@@ -47,6 +47,10 @@ def projective(P, pkt):
 def projective_inv(P, pkt):
     return projective(torch.linalg.inv(P), pkt)
 
+BODY25_PAIRS = [(1, 8), (1, 2), (1, 5), (2, 3), (3, 4), (5, 6), (6, 7), (8, 9), (9, 10),
+                (10, 11), (8, 12), (12, 13), (13, 14), (1, 0), (0, 15), (15, 17), (0, 16),
+                (16, 18), (14, 19), (19, 20), (14, 21), (11, 22), (11, 23), (11, 24)]
+
 class Draw:
     def __init__(self, img):
         self.pil_img = to_pil_image(img)
@@ -81,6 +85,12 @@ class Draw:
 
     def save(self, fn):
         self.pil_img.save(fn)
+        return self
+
+    def skeleton(self, pose_points, pairs=BODY25_PAIRS, fill=None, width=0, joint=None):
+        for pkt in pose_points:
+            for a, b in pairs:
+                self.line(pkt[[a,b], :2], fill, width, joint)
         return self
 
 def grid2d(w: int, h: int):
