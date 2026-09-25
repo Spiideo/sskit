@@ -1,6 +1,9 @@
+from xtcocotools.coco import COCO
 from xtcocotools.cocoeval import COCOeval
+import contextlib, io
 import numpy as np
 from sskit import image_to_ground
+from sskit.pose import BODY25_NAMES, BODY25_SIGMAS
 
 class LocSimCOCOeval(COCOeval):
     locsim_tau = 1
@@ -100,4 +103,33 @@ class BBoxLocSimCOCOeval(LocSimCOCOeval):
         def bbox_ground(x, y, w, h):
             return (x + w/2, y + h)
         return [bbox_ground(*det['bbox']) for det in dt]
+
+
+def coco_eval(gt_path, res, iou_type, log, exclude=()):
+    """xtcocotools evaluation; keypoints listed in `exclude` are marked invisible in the GT
+    so that they do not enter the OKS."""
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        coco_gt = COCO(gt_path)
+        if iou_type == "keypoints" and exclude:
+            for a in coco_gt.dataset["annotations"]:
+                for j in exclude:
+                    if a["keypoints"][3 * j + 2] > 0:
+                        a["keypoints"][3 * j + 2] = 0
+                        a["num_keypoints"] -= 1
+        coco_dt = coco_gt.loadRes(res) if res else COCO()
+        # xtcocotools takes the OKS sigmas in the constructor (params.kpt_oks_sigmas is ignored)
+        ev = COCOeval(coco_gt, coco_dt, iou_type,
+                      sigmas=BODY25_SIGMAS if iou_type == "keypoints" else None)
+        ev.evaluate()
+        ev.accumulate()
+        ev.summarize()
+    text = buf.getvalue()
+    text = text[text.find(" Average Precision"):] if " Average Precision" in text else text
+    note = f", without {', '.join(BODY25_NAMES[j] for j in exclude)}" if iou_type == "keypoints" and exclude else ""
+    log(f"== COCO {iou_type} ({len(res)} detections{note})\n{text.rstrip()}")
+    names = ["AP", "AP50", "AP75", "APs", "APm", "APl", "AR1", "AR10", "AR100", "ARs", "ARm", "ARl"] \
+        if iou_type == "bbox" else ["AP", "AP50", "AP75", "APm", "APl", "AR", "AR50", "AR75", "ARm", "ARl"]
+    return dict(zip(names, [float(s) for s in ev.stats]))
+
 

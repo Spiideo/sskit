@@ -109,9 +109,13 @@ def make_rotation_matrix_from_pan_tilt(pan: float, tilt: float):
     st = torch.sin(tilt)
     return torch.tensor(((-sp, -cp, 0), (st * cp, -st * sp, -ct), (ct * cp, -ct * sp, st)))
 
+def camera_position(camera_matrix):
+    camera_matrix = torch.as_tensor(camera_matrix)
+    return -torch.inverse(camera_matrix[..., :3]) @ camera_matrix[..., 3:4]
+
 def look_at(camera_matrix, dist_poly, image, center, zoom=1):
     center = torch.as_tensor(center)
-    focal_point = -torch.inverse(camera_matrix[:,:3]) @ camera_matrix[:, 3]
+    focal_point = camera_position(camera_matrix)[..., 0]
     pan, tilt = get_pan_tilt_from_direction(center - focal_point)
 
     rot = camera_matrix[:,:3] @ make_rotation_matrix_from_pan_tilt(pan, tilt).mT
