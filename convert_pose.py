@@ -327,10 +327,10 @@ class Item:
     """An item ``<scene>/<Camera>``: a directory, or (when `archive` is given) the member directory
     ``<Camera>`` of ``<scene>.tar.bz2``. Files are read into memory and written back atomically."""
 
-    def __init__(self, path: Path, archive: Optional[Path] = None):
+    def __init__(self, path: Path, archive: Optional[Path] = None, member: Optional[str] = None):
         self.path = path
         self.archive = archive
-        self.member = path.name if archive else None
+        self.member = (member or path.name) if archive else None   # member directory inside the archive
 
     def __str__(self):
         return f"{self.archive}:{self.member}" if self.archive else str(self.path)
@@ -365,19 +365,23 @@ class Item:
 
 
 def make_item(path: Path) -> Item:
-    """Item for ``<root>/<scene>/<Camera>``; uses ``<root>/<scene>.tar.bz2`` if the directory is absent."""
-    archive = path.parent.with_name(path.parent.name + ARCHIVE_SUFFIX)
-    if not path.is_dir() and archive.is_file():
-        return Item(path, archive)
+    """Item for ``<root>/<scene>/[<sub>/]<Camera>``; if the directory is absent, the closest ancestor with
+    a ``<ancestor>.tar.bz2`` next to it is the archive and the rest of the path the member directory."""
+    if not path.is_dir():
+        for ancestor in path.parents:
+            if not ancestor.name:
+                break
+            archive = ancestor.with_name(ancestor.name + ARCHIVE_SUFFIX)
+            if archive.is_file():
+                return Item(path, archive, path.relative_to(ancestor).as_posix())
     return Item(path)
 
 
 def archive_items(archive: Path) -> List[Item]:
     """All camera items (member directories with an objects.json) of a scene archive."""
     scene = archive.with_name(archive.name[:-len(ARCHIVE_SUFFIX)])
-    cameras = sorted(n.rsplit("/", 1)[0] for n in ARCHIVES.get(archive).names
-                     if n.endswith("/objects.json") and n.count("/") == 1)
-    return [Item(scene / camera, archive) for camera in cameras]
+    cameras = sorted(n.rsplit("/", 1)[0] for n in ARCHIVES.get(archive).names if n.endswith("/objects.json"))
+    return [Item(scene / camera, archive, camera) for camera in cameras]
 
 
 # ---------------------------------------------------------------------------
