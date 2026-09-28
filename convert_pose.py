@@ -96,6 +96,9 @@ from scipy.spatial.transform import Rotation
 from tqdm import tqdm
 
 from sskit import imshape, make_camera, unnormalize, world_to_image
+from smplx.vertex_ids import vertex_ids as _vertex_ids
+from smplx.joint_names import JOINT_NAMES as _smplx_joint_names
+
 
 HERE = Path(__file__).resolve().parent
 
@@ -103,30 +106,12 @@ HERE = Path(__file__).resolve().parent
 # Constants
 # ---------------------------------------------------------------------------
 
-# The 55 SMPL-X joints in model order; identical to the keypoint names used in
-# objects.json (verified against smplx.joint_names.JOINT_NAMES[:55]).
-SMPLX_JOINT_NAMES = [
-    "pelvis", "left_hip", "right_hip", "spine1", "left_knee", "right_knee", "spine2",
-    "left_ankle", "right_ankle", "spine3", "left_foot", "right_foot", "neck",
-    "left_collar", "right_collar", "head", "left_shoulder", "right_shoulder",
-    "left_elbow", "right_elbow", "left_wrist", "right_wrist", "jaw",
-    "left_eye_smplhf", "right_eye_smplhf",
-    "left_index1", "left_index2", "left_index3", "left_middle1", "left_middle2",
-    "left_middle3", "left_pinky1", "left_pinky2", "left_pinky3", "left_ring1",
-    "left_ring2", "left_ring3", "left_thumb1", "left_thumb2", "left_thumb3",
-    "right_index1", "right_index2", "right_index3", "right_middle1", "right_middle2",
-    "right_middle3", "right_pinky1", "right_pinky2", "right_pinky3", "right_ring1",
-    "right_ring2", "right_ring3", "right_thumb1", "right_thumb2", "right_thumb3",
-]
-try:  # prefer the authoritative list when smplx is importable
-    from smplx.joint_names import JOINT_NAMES as _SMPLX_JOINT_NAMES
-
-    assert list(_SMPLX_JOINT_NAMES[:55]) == SMPLX_JOINT_NAMES
-except ImportError:  # pragma: no cover
-    pass
-
 NUM_JOINTS = 55
 NUM_BETAS = 10
+
+# The 55 SMPL-X joints in model order; identical to the keypoint names used in
+# objects.json
+SMPLX_JOINT_NAMES = list(_smplx_joint_names[:NUM_JOINTS])
 
 # Joints used as IK targets: body (0-21), jaw and eyes (fix head rotation),
 # and the finger base joints (fix wrist rotation; their position does not
@@ -137,13 +122,8 @@ TARGET_IDX = list(range(25)) + [25, 28, 31, 34, 37, 40, 43, 46, 49, 52]
 # order smplx uses for joints 55-65.
 LANDMARK_NAMES = ["nose", "reye", "leye", "rear", "lear",
                   "LBigToe", "LSmallToe", "LHeel", "RBigToe", "RSmallToe", "RHeel"]
-VERTEX_IDS = [9120, 9929, 9448, 616, 6, 5770, 5780, 8846, 8463, 8474, 8635]
-try:
-    from smplx.vertex_ids import vertex_ids as _vertex_ids
+VERTEX_IDS = [_vertex_ids["smplx"][n] for n in LANDMARK_NAMES]
 
-    assert [_vertex_ids["smplx"][n] for n in LANDMARK_NAMES] == VERTEX_IDS
-except ImportError:  # pragma: no cover
-    pass
 # Joint whose exact position each landmark is re-anchored to: head for the
 # face, foot joints for the toes and ankles for the heels.
 LANDMARK_ANCHOR = [15, 15, 15, 15, 15, 10, 10, 7, 11, 11, 8]
@@ -567,15 +547,18 @@ class PoseFitter:
         params = self.stage1_vposer(J_rest, targets, betas, root0, trans0)
         params, res = self.stage2_refine(J_rest, targets, params)
 
-        bad = torch.isnan(res).any() or (res.amax(-1) > 0.05)
+        bad = torch.isnan(res).any(-1) | (res.amax(-1) > 0.05)
         if bad.any():
-            # fall back to a prior-free fit from the closed form initialisation
+            # fall back to a prior-free fit from the closed form initialisation if it is better
             zero = {"root_orient": root0, "pose_body": torch.zeros_like(params["pose_body"]), "trans": trans0}
             params_z, res_z = self.stage2_refine(J_rest, targets, zero)
             better = torch.nan_to_num(res_z.mean(-1), nan=1e9) < torch.nan_to_num(res.mean(-1), nan=1e9)
+            better &= bad
             for k in params:
                 params[k][better] = params_z[k][better]
             res[better] = res_z[better]
+        assert not torch.isnan(res).any()
+
         params["J_rest"] = J_rest
         params["betas"] = betas
         params["targets"] = targets
@@ -881,6 +864,7 @@ def process_group(fitter: PoseFitter, group: List[List[Human]], args, stats: dic
         stats["corr_max"] = max(stats["corr_max"], float(corr.max()))
         lm_world_all = to_world(humans, lm.cpu().numpy().astype(np.float64))
         corr_all = corr.cpu().numpy()
+
     start = 0
     for hs in group:
         item = hs[0].item if hs else None
@@ -895,6 +879,7 @@ def process_group(fitter: PoseFitter, group: List[List[Human]], args, stats: dic
         if args.show:
             draw_show(item, body25_2d, Path(args.show))
         stats["items"] += 1
+
     ARCHIVES.flush()  # rewrite the touched scene archives once per group
 
 
