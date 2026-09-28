@@ -26,7 +26,18 @@ recovered here by inverse kinematics against the known joints:
 produced with an erroneous principal point at ``(w/2, h/2)`` and are therefore
 0.7 px off compared to the values written here.
 
-Outputs written next to ``objects.json``:
+Scenes may also be stored as ``<scene>.tar.bz2`` archives (members
+``./<Camera>/...``). When an item directory does not exist but the scene
+archive does, the archive is used: bz2 tars have no index, so all archives of
+the run are decompressed up front (``--threads`` in parallel) and the small
+members the script needs are kept in memory, zlib compressed, for the whole
+run; ``rgb.jpg`` only contributes its size. Outputs are added to the archives,
+which are rewritten atomically after each fitting batch (in parallel;
+concurrent ``--shard`` runs serialise on a ``.convert_pose.lock`` file next to
+the archives). An archive can also be given directly as an item to process all
+its cameras.
+
+Outputs written next to ``objects.json`` (added to the archive for archived scenes):
 
 ``openpose_body25.json``
     OpenPose JSON style: ``{"version": 1.3, "people": [{"person_id":
@@ -51,6 +62,7 @@ names and skeleton.
 Usage::
 
     python convert_pose.py BorasArenaCenterLeft2 --show body25.png
+    python convert_pose.py SoccerSceneV1/20231226_153701_node041_10100346_005_003.tar.bz2
     python convert_pose.py --list SoccerSceneV1/val_v1.txt --batch-size 2048
     python convert_pose.py --list SoccerSceneV1/train_v1.txt --shard 0/4
     python convert_pose.py --list SoccerSceneV1/mini_v2.txt --coco-out SoccerNet/SpiideoSynLoc/annotations/person_keypoints_mini.json
@@ -60,14 +72,19 @@ Assets (SMPL-X v1.1 npz models and VPoser V02_05) are looked up in
 downloaded with ``fetch_smplx_assets.py`` (or ``--fetch``).
 """
 import argparse
+import collections
 import contextlib
+import fcntl
 import gzip
 import io
 import json
 import os
 import re
 import sys
+import tarfile
 import time
+import zlib
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -78,7 +95,7 @@ import torch
 from scipy.spatial.transform import Rotation
 from tqdm import tqdm
 
-from sskit import imread, imshape, load_camera, unnormalize, world_to_image
+from sskit import imshape, make_camera, unnormalize, world_to_image
 
 HERE = Path(__file__).resolve().parent
 
@@ -162,6 +179,212 @@ FALLBACK_VPOSER_DIRS = [
 
 
 # ---------------------------------------------------------------------------
+# Items: directories or members of <scene>.tar.bz2 archives
+# ---------------------------------------------------------------------------
+
+ARCHIVE_SUFFIX = ".tar.bz2"
+LOCK_FILE = ".convert_pose.lock"
+# Members kept in memory (zlib compressed) for every archive of the run; other members are
+# read by rescanning the archive when needed (segmentations for unmatched humans, --show).
+CACHED_MEMBERS = {"objects.json", "camera_matrix.npy", "lens.json", "areas_cache.json", OUTPUT_JSON}
+IMAGE_MEMBER = "rgb.jpg"
+
+
+def default_threads() -> int:
+    try:
+        return min(32, len(os.sched_getaffinity(0)))
+    except AttributeError:
+        return min(32, os.cpu_count() or 1)
+
+
+@contextlib.contextmanager
+def file_lock(path: Path):
+    """Exclusive flock on `path` (created if missing); degrades to no locking with a warning."""
+    fd = None
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o664)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+    except OSError as e:
+        print(f"warning: cannot lock {path} ({e}); concurrent archive updates are unsafe", file=sys.stderr)
+    try:
+        yield
+    finally:
+        if fd is not None:
+            os.close(fd)  # releases the lock
+
+
+class Archive:
+    """One <scene>.tar.bz2: the names of all members, the CACHED_MEMBERS contents, the image sizes,
+    and files to add on flush(). Reading it decompresses the whole archive once."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.prefix = ""                       # "./" if the members are stored that way
+        self.names: set = set()                # regular file members, without the prefix
+        self.data: Dict[str, bytes] = {}       # zlib compressed member contents
+        self.shapes: Dict[str, tuple] = {}     # (3, h, w) of the image members
+        self.pending: Dict[str, bytes] = {}
+        self.owner = (os.getuid(), os.getgid(), "", "")
+        with tarfile.open(path, "r|bz2") as tar:
+            for m in tar:
+                if m.name.startswith("./"):
+                    self.prefix = "./"
+                if not m.isfile():
+                    continue
+                name = self.strip(m.name)
+                self.names.add(name)
+                self.owner = (m.uid, m.gid, m.uname, m.gname)
+                base = name.rsplit("/", 1)[-1]
+                if base in CACHED_MEMBERS:
+                    self.data[name] = zlib.compress(tar.extractfile(m).read(), 1)
+                elif base == IMAGE_MEMBER:
+                    self.shapes[name] = imshape(io.BytesIO(tar.extractfile(m).read()))
+
+    @staticmethod
+    def strip(name: str) -> str:
+        return name[2:] if name.startswith("./") else name
+
+    def exists(self, name: str) -> bool:
+        return name in self.names
+
+    def read(self, name: str) -> bytes:
+        if name in self.data:
+            return zlib.decompress(self.data[name])
+        if name not in self.names:
+            raise FileNotFoundError(f"{self.path}:{name}")
+        with tarfile.open(self.path, "r|bz2") as tar:  # uncached member: rescan
+            for m in tar:
+                if m.isfile() and self.strip(m.name) == name:
+                    return tar.extractfile(m).read()
+        raise FileNotFoundError(f"{self.path}:{name}")
+
+    def image_shape(self, name: str) -> tuple:
+        return self.shapes[name]
+
+    def write(self, name: str, data: bytes):
+        self.pending[name] = data
+        self.names.add(name)
+        if name.rsplit("/", 1)[-1] in CACHED_MEMBERS:
+            self.data[name] = zlib.compress(data, 1)
+
+    def flush(self):
+        """Rewrite the archive with the pending files added (replacing members of the same name).
+        The caller holds the lock of the archive's directory."""
+        if not self.pending:
+            return
+        tmp = self.path.with_name(self.path.name + ".tmp")
+        with tarfile.open(self.path, "r|bz2") as old, tarfile.open(tmp, "w:bz2") as new:
+            for m in old:
+                if self.strip(m.name) in self.pending:
+                    continue
+                new.addfile(m, old.extractfile(m) if m.isfile() else None)
+            for name, data in self.pending.items():
+                info = tarfile.TarInfo(self.prefix + name)
+                info.size, info.mtime, info.mode = len(data), int(time.time()), 0o644
+                info.uid, info.gid, info.uname, info.gname = self.owner
+                new.addfile(info, io.BytesIO(data))
+        os.replace(tmp, self.path)
+        self.pending.clear()
+
+
+class ArchiveCache:
+    """All archives touched by the run. Loading and rewriting run in a thread pool (bz2 releases the GIL)."""
+
+    def __init__(self, threads: Optional[int] = None):
+        self.threads = threads or default_threads()
+        self.archives: Dict[Path, Archive] = {}
+
+    def get(self, path: Path) -> Archive:
+        if path not in self.archives:
+            self.archives[path] = Archive(path)
+        return self.archives[path]
+
+    def prefetch(self, paths: Sequence[Path]):
+        todo = list(dict.fromkeys(p for p in paths if p not in self.archives))
+        if not todo:
+            return
+        with ThreadPoolExecutor(self.threads) as pool:
+            for path, archive in zip(todo, tqdm(pool.map(Archive, todo), total=len(todo), unit="archive",
+                                                desc="reading archives", disable=not sys.stderr.isatty())):
+                self.archives[path] = archive
+
+    def flush(self):
+        """Rewrite all archives with pending files, holding the lock of each directory involved."""
+        dirty = [a for a in self.archives.values() if a.pending]
+        if not dirty:
+            return
+        with contextlib.ExitStack() as stack:
+            for directory in sorted({a.path.parent for a in dirty}):
+                stack.enter_context(file_lock(directory / LOCK_FILE))
+            with ThreadPoolExecutor(self.threads) as pool:
+                list(pool.map(Archive.flush, dirty))
+
+
+ARCHIVES = ArchiveCache()
+
+
+class Item:
+    """An item ``<scene>/<Camera>``: a directory, or (when `archive` is given) the member directory
+    ``<Camera>`` of ``<scene>.tar.bz2``. Files are read into memory and written back atomically."""
+
+    def __init__(self, path: Path, archive: Optional[Path] = None, member: Optional[str] = None):
+        self.path = path
+        self.archive = archive
+        self.member = (member or path.name) if archive else None   # member directory inside the archive
+
+    def __str__(self):
+        return f"{self.archive}:{self.member}" if self.archive else str(self.path)
+
+    def _member(self, name: str) -> str:
+        return f"{self.member}/{name}"
+
+    def exists(self, name: str) -> bool:
+        if self.archive:
+            return ARCHIVES.get(self.archive).exists(self._member(name))
+        return (self.path / name).exists()
+
+    def read_bytes(self, name: str) -> bytes:
+        if self.archive:
+            return ARCHIVES.get(self.archive).read(self._member(name))
+        return (self.path / name).read_bytes()
+
+    def read_json(self, name: str):
+        return json.loads(self.read_bytes(name))
+
+    def image_shape(self, name: str = IMAGE_MEMBER) -> tuple:
+        """(3, h, w) of an image member, without reading the pixels."""
+        if self.archive:
+            return ARCHIVES.get(self.archive).image_shape(self._member(name))
+        return imshape(self.path / name)
+
+    def write(self, name: str, data: bytes):
+        if self.archive:
+            ARCHIVES.get(self.archive).write(self._member(name), data)
+        else:
+            atomic_write(self.path / name, lambda p: p.write_bytes(data))
+
+
+def make_item(path: Path) -> Item:
+    """Item for ``<root>/<scene>/[<sub>/]<Camera>``; if the directory is absent, the closest ancestor with
+    a ``<ancestor>.tar.bz2`` next to it is the archive and the rest of the path the member directory."""
+    if not path.is_dir():
+        for ancestor in path.parents:
+            if not ancestor.name:
+                break
+            archive = ancestor.with_name(ancestor.name + ARCHIVE_SUFFIX)
+            if archive.is_file():
+                return Item(path, archive, path.relative_to(ancestor).as_posix())
+    return Item(path)
+
+
+def archive_items(archive: Path) -> List[Item]:
+    """All camera items (member directories with an objects.json) of a scene archive."""
+    scene = archive.with_name(archive.name[:-len(ARCHIVE_SUFFIX)])
+    cameras = sorted(n.rsplit("/", 1)[0] for n in ARCHIVES.get(archive).names if n.endswith("/objects.json"))
+    return [Item(scene / camera, archive, camera) for camera in cameras]
+
+
+# ---------------------------------------------------------------------------
 # Assets
 # ---------------------------------------------------------------------------
 
@@ -217,7 +440,7 @@ def import_hbp():
 
 @dataclass
 class Human:
-    item_dir: Path
+    item: Item
     key: str
     segmentation_id: int
     gender: str
@@ -226,10 +449,9 @@ class Human:
     kp_world: np.ndarray       # (55, 3) exact joints from objects.json
 
 
-def load_item_humans(item_dir: Path, objects: Optional[dict] = None) -> List[Human]:
+def load_item_humans(item: Item, objects: Optional[dict] = None) -> List[Human]:
     if objects is None:
-        with open(item_dir / "objects.json") as fd:
-            objects = json.load(fd)
+        objects = item.read_json("objects.json")
     humans = []
     for key, obj in sorted(objects.items()):
         if obj.get("class") != "human":
@@ -243,9 +465,9 @@ def load_item_humans(item_dir: Path, objects: Optional[dict] = None) -> List[Hum
         matrix_world = np.asarray(obj["smpl_matrix_world"], dtype=np.float64)
         to_world = matrix_world @ RX90
         if abs(np.linalg.det(to_world[:3, :3]) - 1) > 1e-4:
-            raise ValueError(f"{item_dir}/{key}: smpl_matrix_world is not a rigid transform")
+            raise ValueError(f"{item}/{key}: smpl_matrix_world is not a rigid transform")
         humans.append(Human(
-            item_dir=item_dir,
+            item=item,
             key=key,
             segmentation_id=int(obj["segmentation_id"]),
             gender=gender,
@@ -426,10 +648,11 @@ def assemble_body25(kp_world: np.ndarray, lm_world: np.ndarray) -> np.ndarray:
     return np.concatenate([kp_world, lm_world], axis=1)[:, BODY25_FROM_SMPLX]
 
 
-def project(item_dir: Path, pts_world: np.ndarray) -> np.ndarray:
+def project(item: Item, pts_world: np.ndarray) -> np.ndarray:
     """World (N,3) -> pixel (N,2) in rgb.jpg (sskit convention, principal point at ((w-1)/2, (h-1)/2))."""
-    camera_matrix, dist_poly, _ = load_camera(item_dir)
-    shape = imshape(item_dir / "rgb.jpg")
+    camera_matrix, dist_poly, _ = make_camera(np.load(io.BytesIO(item.read_bytes("camera_matrix.npy"))),
+                                              item.read_json("lens.json"))
+    shape = item.image_shape()
     pkt = torch.as_tensor(pts_world.reshape(-1, 3), dtype=torch.float32)
     uv = unnormalize(world_to_image(camera_matrix, dist_poly, pkt), shape)
     return uv.numpy().reshape(*pts_world.shape[:-1], 2)
@@ -450,7 +673,7 @@ landmark_correction_mm: shift applied to each of the 11 OpenPose landmark vertic
 to the exact joints (order: %s)."""
 
 
-def write_outputs(item_dir: Path, humans: Sequence[Human], body25_3d: np.ndarray, body25_2d: np.ndarray,
+def write_outputs(item: Item, humans: Sequence[Human], body25_3d: np.ndarray, body25_2d: np.ndarray,
                   params: dict, idx: Sequence[int], lm_corr: np.ndarray):
     people = []
     for j, h in enumerate(humans):
@@ -475,7 +698,7 @@ def write_outputs(item_dir: Path, humans: Sequence[Human], body25_3d: np.ndarray
                 "Neck/MidHip are the SMPL-X neck/pelvis joints (smplify-x convention).",
         "people": people,
     }
-    atomic_write(item_dir / OUTPUT_JSON, lambda p: p.write_text(json.dumps(doc)))
+    item.write(OUTPUT_JSON, json.dumps(doc).encode())
 
     cpu = {k: params[k][idx].cpu().numpy() for k in ("root_orient", "pose_body", "trans", "betas", "residual")}
     arrays = dict(
@@ -494,15 +717,16 @@ def write_outputs(item_dir: Path, humans: Sequence[Human], body25_3d: np.ndarray
         body25_2d=body25_2d.astype(np.float64),
         readme=np.array(NPZ_README % ", ".join(LANDMARK_NAMES)),
     )
-    atomic_write(item_dir / OUTPUT_NPZ, lambda p: np.savez_compressed(p, **arrays))
+    buf = io.BytesIO()
+    np.savez_compressed(buf, **arrays)
+    item.write(OUTPUT_NPZ, buf.getvalue())
 
 
-def draw_show(item_dir: Path, body25_2d: np.ndarray, out: Path):
+def draw_show(item: Item, body25_2d: np.ndarray, out: Path):
     """Draw the BODY_25 skeletons on rgb.jpg: joints red, face landmarks yellow, feet blue."""
-    from PIL import ImageDraw
-    from torchvision.transforms.functional import to_pil_image
+    from PIL import Image, ImageDraw
 
-    img = to_pil_image(imread(str(item_dir / "rgb.jpg")))
+    img = Image.open(io.BytesIO(item.read_bytes("rgb.jpg"))).convert("RGB")
     draw = ImageDraw.Draw(img)
     colors = ["red"] * 25
     for i in (0, 15, 16, 17, 18):
@@ -528,19 +752,18 @@ def default_coco_images(coco_out: Path, list_file: Path) -> Path:
     return coco_out.parent / f"{split}.json"
 
 
-def object_area(item_dir: Path, key: str, obj: dict, seg_cache: dict) -> int:
+def object_area(item: Item, key: str, obj: dict, seg_cache: dict) -> int:
     """Pixel area of a human, from areas_cache.json (written by make_coco.py) or the segmentation."""
-    areas_fn = item_dir / "areas_cache.json"
     if "areas" not in seg_cache:
-        seg_cache["areas"] = json.loads(areas_fn.read_text()) if areas_fn.exists() else {}
+        seg_cache["areas"] = item.read_json("areas_cache.json") if item.exists("areas_cache.json") else {}
     if key not in seg_cache["areas"]:
         if "seg" not in seg_cache:
-            seg_cache["seg"] = np.load(io.BytesIO(gzip.decompress((item_dir / "segmentations.npy.gz").read_bytes())))
+            seg_cache["seg"] = np.load(io.BytesIO(gzip.decompress(item.read_bytes("segmentations.npy.gz"))))
         seg_cache["areas"][key] = int((seg_cache["seg"] == obj["segmentation_id"]).sum())
     return seg_cache["areas"][key]
 
 
-def write_coco(coco_out: Path, coco_images: Path, list_file: Path, items: List[Path]):
+def write_coco(coco_out: Path, coco_images: Path, list_file: Path, items: List[Item]):
     """Collect the per-item openpose_body25.json files of `items` (in list order) into one COCO
     keypoint style file that references the images of the bbox annotation file `coco_images`."""
     ref = json.loads(coco_images.read_text())
@@ -553,16 +776,15 @@ def write_coco(coco_out: Path, coco_images: Path, list_file: Path, items: List[P
     annotations, next_id = [], max((a["id"] for a in ref["annotations"]), default=-1) + 1
     n_missing = n_unmatched = 0
     for image, item in zip(ref["images"], items):
-        pose_fn = item / OUTPUT_JSON
-        if not pose_fn.exists():
+        if not item.exists(OUTPUT_JSON):
             n_missing += 1
             continue
-        camera_matrix = np.load(item / "camera_matrix.npy")[:3]
+        camera_matrix = np.load(io.BytesIO(item.read_bytes("camera_matrix.npy")))[:3]
         if not np.allclose(camera_matrix, np.array(image["camera_matrix"]), atol=1e-5):
             raise ValueError(f"camera matrix of image {image['id']} in {coco_images} does not match {item}; "
                              "is the list file the one the bbox annotations were made from?")
-        objects = json.loads((item / "objects.json").read_text())
-        people = json.loads(pose_fn.read_text())["people"]
+        objects = item.read_json("objects.json")
+        people = item.read_json(OUTPUT_JSON)["people"]
         candidates = list(ref_anns.get(image["id"], []))
         seg_cache: dict = {}
         for person in people:
@@ -617,8 +839,14 @@ def write_coco(coco_out: Path, coco_images: Path, list_file: Path, items: List[P
 # Driver
 # ---------------------------------------------------------------------------
 
-def iter_items(args) -> List[Path]:
-    items = [Path(d) for d in args.item_dirs]
+def iter_items(args) -> List[Item]:
+    items = []
+    for d in args.item_dirs:
+        p = Path(d)
+        if p.name.endswith(ARCHIVE_SUFFIX) and p.is_file():
+            items += archive_items(p)
+        else:
+            items.append(make_item(p))
     for lst in args.list:
         lst = Path(lst)
         root = Path(args.root) if args.root else lst.parent
@@ -626,15 +854,15 @@ def iter_items(args) -> List[Path]:
             line = line.strip()
             if line:
                 p = root / line
-                items.append(p.parent if p.suffix else p)
+                items.append(make_item(p.parent if p.suffix else p))
     if args.shard:
         i, n = map(int, args.shard.split("/"))
         items = items[i::n]
     return items
 
 
-def needs_processing(item_dir: Path, overwrite: bool) -> bool:
-    return overwrite or not ((item_dir / OUTPUT_JSON).exists() and (item_dir / OUTPUT_NPZ).exists())
+def needs_processing(item: Item, overwrite: bool) -> bool:
+    return overwrite or not (item.exists(OUTPUT_JSON) and item.exists(OUTPUT_NPZ))
 
 
 def process_group(fitter: PoseFitter, group: List[List[Human]], args, stats: dict):
@@ -655,23 +883,24 @@ def process_group(fitter: PoseFitter, group: List[List[Human]], args, stats: dic
         corr_all = corr.cpu().numpy()
     start = 0
     for hs in group:
-        item_dir = hs[0].item_dir if hs else None
+        item = hs[0].item if hs else None
         idx = list(range(start, start + len(hs)))
         start += len(hs)
         if not hs:
             continue
         kp_world = np.stack([h.kp_world for h in hs])
         body25_3d = assemble_body25(kp_world, lm_world_all[idx])
-        body25_2d = project(item_dir, body25_3d)
-        write_outputs(item_dir, hs, body25_3d, body25_2d, params, idx, corr_all[idx])
+        body25_2d = project(item, body25_3d)
+        write_outputs(item, hs, body25_3d, body25_2d, params, idx, corr_all[idx])
         if args.show:
-            draw_show(item_dir, body25_2d, Path(args.show))
+            draw_show(item, body25_2d, Path(args.show))
         stats["items"] += 1
+    ARCHIVES.flush()  # rewrite the touched scene archives once per group
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("item_dirs", nargs="*", help="item directories containing objects.json")
+    parser.add_argument("item_dirs", nargs="*", help="item directories containing objects.json, or <scene>.tar.bz2 archives")
     parser.add_argument("--list", action="append", default=[], help="split list file (lines like ./scene/Camera/rgb.jpg); repeatable")
     parser.add_argument("--root", help="dataset root for --list entries (default: the list file's directory)")
     parser.add_argument("--shard", help="I/N: process every N-th item starting at I")
@@ -687,6 +916,7 @@ def main(argv=None):
                         "style json that reuses the images of the SynLoc bbox annotation file of the same split")
     parser.add_argument("--coco-images", type=Path, help="bbox annotation file whose images/annotations are reused "
                         "(default: <coco-out dir>/<split>.json, split = list file name without _vN)")
+    parser.add_argument("--threads", type=int, default=default_threads(), help="threads for reading and rewriting scene archives")
     parser.add_argument("--dry-run", action="store_true", help="only list what would be processed")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
@@ -698,12 +928,14 @@ def main(argv=None):
         coco_images = args.coco_images or default_coco_images(args.coco_out, Path(args.list[0]))
         if not coco_images.exists():
             parser.error(f"bbox annotation file {coco_images} not found; pass --coco-images")
+    ARCHIVES.threads = args.threads
     items = iter_items(args)
     if not items:
         parser.error("no items given; pass item directories or --list")
+    ARCHIVES.prefetch([item.archive for item in items if item.archive])
     todo, skipped, missing = [], 0, 0
     for item in items:
-        absent = [f for f in REQUIRED_FILES if not (item / f).exists()]
+        absent = [f for f in REQUIRED_FILES if not item.exists(f)]
         if absent:
             missing += 1
             if args.verbose:
@@ -721,7 +953,7 @@ def main(argv=None):
         write_coco(args.coco_out, coco_images, Path(args.list[0]), items)
 
 
-def convert_items(todo: List[Path], args):
+def convert_items(todo: List[Item], args):
 
     model_paths, vposer_dir = resolve_assets(args.models_dir, fetch=args.fetch)
     fitter = PoseFitter(model_paths, vposer_dir, torch.device(args.device), args.ik_iter, args.refine_iter)
@@ -741,6 +973,7 @@ def convert_items(todo: List[Path], args):
             group, n_group = [], 0
     if group:
         process_group(fitter, group, args, stats)
+    ARCHIVES.flush()
 
     if stats["humans"]:
         print(f"processed {stats['items']} items, {stats['humans']} humans in {stats['fit_time']:.1f} s "

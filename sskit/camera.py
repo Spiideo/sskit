@@ -55,9 +55,13 @@ def image_to_ground(camera_matrix, undistortion_poly, pkt):
 
 def load_camera(directory: Path, poly_dim=8):
     directory = Path(directory)
-    camera_matrix = np.load(directory / "camera_matrix.npy")[:3]
     with open(directory / "lens.json") as fd:
         lens = json.load(fd)
+    return make_camera(np.load(directory / "camera_matrix.npy"), lens, poly_dim)
+
+def make_camera(camera_matrix, lens: dict, poly_dim=8):
+    """Same as load_camera, but from the already loaded contents of camera_matrix.npy and lens.json."""
+    camera_matrix = np.asarray(camera_matrix)[:3]
     dist_poly = lens["dist_poly"]
     sensor_width = lens["sensor_width"]
     pixel_width = lens["pixel_width"]
