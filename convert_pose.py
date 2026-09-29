@@ -55,9 +55,11 @@ existing SynLoc bbox annotation file for the same split (``mini.json`` next to
 the output, or ``--coco-images``; list line ``i`` is image ``i``, verified via
 the camera matrix) and, per human, the ``id``, ``bbox``, ``area`` and
 ``position_on_pitch`` of the matching bbox annotation, adding flat COCO
-``keypoints`` (25 x ``[u, v, 2]``), ``keypoints_3d`` (25 x ``[x, y, z, 1]``,
-world metres) and ``num_keypoints``. The category carries the BODY_25 keypoint
-names and skeleton.
+``keypoints`` (25 x ``[u, v, v_flag]``), ``keypoints_3d`` (25 x ``[x, y, z, 1]``,
+world metres) and ``num_keypoints``. Keypoints projecting outside the image
+get ``v_flag = 0`` (and ``u = v = 0``), the others ``v_flag = 2``; humans with
+none of the 15 FIFA joints (``sskit.pose.BODY25_TO_FIFA15``) inside the image
+are dropped. The category carries the BODY_25 keypoint names and skeleton.
 
 Usage::
 
@@ -68,8 +70,24 @@ Usage::
     python convert_pose.py --list SoccerSceneV1/mini_v2.txt --coco-out SoccerNet/SpiideoSynLoc/annotations/person_keypoints_mini.json
 
 Assets (SMPL-X v1.1 npz models and VPoser V02_05) are looked up in
-``--models-dir`` / ``$SMPLX_ASSETS_DIR`` / ``~/.cache/smplx`` and can be
-downloaded with ``fetch_smplx_assets.py`` (or ``--fetch``).
+``--models-dir`` / ``$SMPLX_ASSETS_DIR`` / ``~/.cache/smplx`` and should contain::
+
+    ./V02_05
+    ./V02_05/V02_05.log
+    ./V02_05/V02_05.yaml
+    ./V02_05/snapshots
+    ./V02_05/snapshots/V02_05_epoch=13_val_loss=0.03.ckpt
+    ./zips
+    ./models
+    ./models/smplx
+    ./models/smplx/SMPLX_NEUTRAL.pkl
+    ./models/smplx/SMPLX_NEUTRAL.npz
+    ./models/smplx/SMPLX_MALE.npz
+    ./models/smplx/version.txt
+    ./models/smplx/SMPLX_FEMALE.npz
+    ./models/smplx/smplx_npz.zip
+    ./models/smplx/SMPLX_FEMALE.pkl
+    ./models/smplx/SMPLX_MALE.pkl
 """
 import argparse
 import collections
@@ -96,6 +114,7 @@ from scipy.spatial.transform import Rotation
 from tqdm import tqdm
 
 from sskit import imshape, make_camera, unnormalize, world_to_image
+from sskit.pose import BODY25_TO_FIFA15
 from smplx.vertex_ids import vertex_ids as _vertex_ids
 from smplx.joint_names import JOINT_NAMES as _smplx_joint_names
 
@@ -273,6 +292,7 @@ class ArchiveCache:
     def __init__(self, threads: Optional[int] = None):
         self.threads = threads or default_threads()
         self.archives: Dict[Path, Archive] = {}
+        self.show_count = 0
 
     def get(self, path: Path) -> Archive:
         if path not in self.archives:
@@ -372,7 +392,7 @@ def default_models_dir() -> Path:
     return Path(os.environ.get("SMPLX_ASSETS_DIR", Path.home() / ".cache" / "smplx"))
 
 
-def resolve_assets(models_dir: Path, fetch: bool = False):
+def resolve_assets(models_dir: Path):
     """Return ({gender: npz path}, vposer_dir), downloading if requested."""
     def find():
         model_dirs = [models_dir / "models" / "smplx", models_dir / "smplx", models_dir] + FALLBACK_MODEL_DIRS
@@ -388,14 +408,8 @@ def resolve_assets(models_dir: Path, fetch: bool = False):
         return models, vposer
 
     models, vposer = find()
-    if fetch or models is None or vposer is None:
-        sys.path.insert(0, str(HERE))
-        import fetch_smplx_assets
-
-        fetch_smplx_assets.main(["--dest", str(models_dir)])
-        models, vposer = find()
     if models is None or vposer is None:
-        sys.exit(f"SMPL-X models / VPoser not found under {models_dir}; run fetch_smplx_assets.py")
+        sys.exit(f"SMPL-X models / VPoser not found under {models_dir}")
     return models, vposer
 
 
@@ -709,6 +723,7 @@ def draw_show(item: Item, body25_2d: np.ndarray, out: Path):
     """Draw the BODY_25 skeletons on rgb.jpg: joints red, face landmarks yellow, feet blue."""
     from PIL import Image, ImageDraw
 
+    out.parent.mkdir(parents=True, exist_ok=True)
     img = Image.open(io.BytesIO(item.read_bytes("rgb.jpg"))).convert("RGB")
     draw = ImageDraw.Draw(img)
     colors = ["red"] * 25
@@ -757,7 +772,7 @@ def write_coco(coco_out: Path, coco_images: Path, list_file: Path, items: List[I
         ref_anns.setdefault(a["image_id"], []).append(a)
 
     annotations, next_id = [], max((a["id"] for a in ref["annotations"]), default=-1) + 1
-    n_missing = n_unmatched = 0
+    n_missing = n_unmatched = n_outside = 0
     for image, item in zip(ref["images"], items):
         if not item.exists(OUTPUT_JSON):
             n_missing += 1
@@ -770,7 +785,17 @@ def write_coco(coco_out: Path, coco_images: Path, list_file: Path, items: List[I
         people = item.read_json(OUTPUT_JSON)["people"]
         candidates = list(ref_anns.get(image["id"], []))
         seg_cache: dict = {}
+        _, height, width = item.image_shape()
         for person in people:
+            kp2 = np.array(person["pose_keypoints_2d"]).reshape(25, 3)
+            kp3 = np.array(person["pose_keypoints_3d"]).reshape(25, 4)
+            # COCO visibility flag: 2 = labelled and visible (occlusion is not evaluated), 0 = outside the image
+            inside = ((kp2[:, 0] >= 0) & (kp2[:, 0] <= width-1) & (kp2[:, 1] >= 0) & (kp2[:, 1] <= height-1))
+            if not inside[BODY25_TO_FIFA15].any():
+                n_outside += 1
+                continue
+            kp2[:, 2] = np.where(inside, 2, 0)
+            kp2[~inside, :2] = 0
             obj = objects[person["object_key"]]
             pelvis = np.array(obj["keypoints"]["pelvis"])
             match = next((a for a in candidates if np.allclose(a["keypoints_3d"][0][:3], pelvis, atol=1e-6)), None)
@@ -783,9 +808,6 @@ def write_coco(coco_out: Path, coco_images: Path, list_file: Path, items: List[I
                 ann = dict(id=next_id, position_on_pitch=[float(pelvis[0]), float(pelvis[1])],
                            bbox=[u0, v0, u1 - u0, v1 - v0], area=object_area(item, person["object_key"], obj, seg_cache))
                 next_id += 1
-            kp2 = np.array(person["pose_keypoints_2d"]).reshape(25, 3)
-            kp3 = np.array(person["pose_keypoints_3d"]).reshape(25, 4)
-            kp2[:, 2] = 2  # COCO visibility flag: labelled (visibility is not evaluated)
             ann.update(
                 image_id=image["id"],
                 category_id=1,
@@ -793,7 +815,7 @@ def write_coco(coco_out: Path, coco_images: Path, list_file: Path, items: List[I
                 segmentation_id=person["person_id"][0],
                 keypoints=[round(float(x), 3) for x in kp2.ravel()],
                 keypoints_3d=[round(float(x), 5) for x in kp3.ravel()],
-                num_keypoints=25,
+                num_keypoints=int(inside.sum()),
             )
             annotations.append(ann)
 
@@ -804,7 +826,9 @@ def write_coco(coco_out: Path, coco_images: Path, list_file: Path, items: List[I
                          skeleton=[[a + 1, b + 1] for a, b in BODY25_PAIRS])],
         info=dict(description="OpenPose BODY_25 keypoints for Spiideo SoccerNet SynLoc, generated by sskit/convert_pose.py "
                               "from SMPL-X fits; keypoints are pixels (principal point ((w-1)/2, (h-1)/2)), keypoints_3d are "
-                              "world/pitch metres with a trailing 1; MidHip/Neck are the SMPL-X pelvis/neck joints.",
+                              "world/pitch metres with a trailing 1; keypoints outside the image have visibility 0 and u = v = 0; "
+                              "humans with none of the 15 FIFA joints inside the image are omitted; "
+                              "MidHip/Neck are the SMPL-X pelvis/neck joints.",
                   source_list=str(list_file), bbox_annotations=str(coco_images)),
     )
     coco_out.parent.mkdir(parents=True, exist_ok=True)
@@ -815,7 +839,8 @@ def write_coco(coco_out: Path, coco_images: Path, list_file: Path, items: List[I
 
     atomic_write(coco_out, dump)
     print(f"wrote {coco_out}: {len(doc['images'])} images, {len(annotations)} annotations "
-          f"({n_missing} items without pose output, {n_unmatched} humans without bbox annotation)", file=sys.stderr)
+          f"({n_missing} items without pose output, {n_unmatched} humans without bbox annotation, "
+          f"{n_outside} humans dropped with no FIFA joint inside the image)", file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -877,7 +902,8 @@ def process_group(fitter: PoseFitter, group: List[List[Human]], args, stats: dic
         body25_2d = project(item, body25_3d)
         write_outputs(item, hs, body25_3d, body25_2d, params, idx, corr_all[idx])
         if args.show:
-            draw_show(item, body25_2d, Path(args.show))
+            draw_show(item, body25_2d, Path(args.show) / f'{ARCHIVES.show_count:06d}.png')
+            ARCHIVES.show_count += 1
         stats["items"] += 1
 
     ARCHIVES.flush()  # rewrite the touched scene archives once per group
@@ -892,7 +918,6 @@ def main(argv=None):
     parser.add_argument("--batch-size", type=int, default=2048, help="humans fitted per optimisation batch (cost is per LBFGS iteration, so bigger is faster; ~1 GB GPU memory at 2048)")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--models-dir", type=Path, default=default_models_dir(), help="SMPL-X assets dir ($SMPLX_ASSETS_DIR or ~/.cache/smplx)")
-    parser.add_argument("--fetch", action="store_true", help="download assets with fetch_smplx_assets.py")
     parser.add_argument("--overwrite", action="store_true", help="recompute items that already have outputs")
     parser.add_argument("--ik-iter", type=int, default=300, help="LBFGS iterations for the VPoser stage")
     parser.add_argument("--refine-iter", type=int, default=100, help="LBFGS iterations per refinement step")
@@ -940,7 +965,7 @@ def main(argv=None):
 
 def convert_items(todo: List[Item], args):
 
-    model_paths, vposer_dir = resolve_assets(args.models_dir, fetch=args.fetch)
+    model_paths, vposer_dir = resolve_assets(args.models_dir)
     fitter = PoseFitter(model_paths, vposer_dir, torch.device(args.device), args.ik_iter, args.refine_iter)
 
     stats = dict(items=0, humans=0, fit_time=0.0, res_mean_sum=0.0, res_max=0.0, corr_max=0.0)
