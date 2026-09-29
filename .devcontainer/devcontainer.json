@@ -15,5 +15,5 @@
       "source=${localEnv:HOME}/.cache,target=/workspace/home/.cache,type=bind,consistency=cached",
       "source=${localEnv:HOME}/.torch,target=/workspace/home/.torch,type=bind,consistency=cached",
     ],
-    // "postStartCommand": "pip install -e .[all]"
+    "postStartCommand": "pip install -e ."
 }

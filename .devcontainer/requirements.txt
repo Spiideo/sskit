@@ -10,7 +10,7 @@ setuptools>=70.0.0
 # mmpose>=1.1.0
 importlib_metadata
 
-xtcocotools
+xtcocotools  # rebuilt from source in the Dockerfile, its PyPI wheels do not work with numpy 2
 scipy
 
 # SMPL-X pose recovery for convert_pose.py (the Dockerfile builds wheels with

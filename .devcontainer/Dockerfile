@@ -14,6 +14,12 @@ ENV CUDA_HOME=/usr/local/cuda/
 
 COPY requirements*.txt /workspace/
 RUN --mount=type=cache,target=/root/.cache/pip pip wheel --wheel-dir /wheels --no-deps -r requirements.txt
+# The xtcocotools wheels on PyPI are compiled against numpy 1 and fail to import with the numpy 2 that
+# the base image ships ("numpy.dtype size changed, may indicate binary incompatibility"). Replace the
+# downloaded wheel with one built here, against the installed numpy. Its setup.py imports numpy and
+# cythonizes the extension, hence no build isolation and cython installed up front.
+RUN --mount=type=cache,target=/root/.cache/pip rm /wheels/xtcocotools-*.whl && pip install cython && \
+    pip wheel --wheel-dir /wheels --no-deps --no-binary :all: --no-build-isolation xtcocotools
 RUN --mount=type=cache,target=/root/.cache/pip pip wheel --wheel-dir /wheels-devel --no-deps -r requirements-devel.txt
 
 FROM pytorch/pytorch:${TORCH_VERSION}-runtime as base
