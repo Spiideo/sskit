@@ -2,7 +2,8 @@ from xtcocotools.coco import COCO
 from xtcocotools.cocoeval import COCOeval
 import contextlib, io
 import numpy as np
-from sskit import image_to_ground
+import torch
+from sskit import image_to_ground, world_to_image, unnormalize
 from sskit.pose import BODY25_NAMES, BODY25_SIGMAS, BODY25_TO_FIFA15, BODY25_TO_COCO17
 
 def locsim(dist2, tau=1):
@@ -117,7 +118,8 @@ class Keypoint3DLocSimCOCOeval(LocSimCOCOeval):
     """Keypoint evaluation (iouType 'keypoints') that matches detections to ground truth on the
     mean LocSim of the 3D distances between the detected and ground truth `keypoints_3d`, taken
     over the ground truth keypoints with visibility > 0, instead of on the OKS. `keypoints_3d`
-    holds one [x, y, z] or [x, y, z, 1] row per keypoint (flat or nested). Up to `max_dets`
+    holds one [x, y, z] or [x, y, z, 1] row per keypoint (nested, or flat, in which case rows of
+    3 are assumed unless the length is not divisible by 3). Up to `max_dets`
     detections per image are evaluated (xtcocotools' keypoint default of 20 is too low for a
     soccer frame)."""
 
@@ -147,8 +149,10 @@ class Keypoint3DLocSimCOCOeval(LocSimCOCOeval):
 
     @staticmethod
     def get_kp3d(anns):
-        return np.array([np.asarray(a['keypoints_3d'], float).reshape(len(a['keypoints']) // 3, -1)[:, :3]
-                         for a in anns])
+        def rows(kp):
+            kp = np.asarray(kp, float)
+            return kp.reshape(-1, 4 if kp.size % 3 else 3) if kp.ndim == 1 else kp
+        return np.array([rows(a['keypoints_3d'])[:, :3] for a in anns])
 
     def computeOks(self, imgId, catId):
         p = self.params
@@ -171,6 +175,15 @@ class Keypoint3DLocSimCOCOeval(LocSimCOCOeval):
         return ious
 
 
+def project_keypoints(image, kp3d):
+    """COCO keypoints [u, v, 1, ...] in pixels of the 3D keypoints `kp3d` projected into `image`
+    (a COCO image entry with `camera_matrix`, `dist_poly`, `width` and `height`)."""
+    pkt = torch.as_tensor(Keypoint3DLocSimCOCOeval.get_kp3d([{'keypoints_3d': kp3d}])[0], dtype=torch.float32)
+    uv = world_to_image(torch.tensor(image['camera_matrix']), torch.tensor(image['dist_poly']), pkt)
+    uv = unnormalize(uv, (3, image['height'], image['width'])).numpy()
+    return np.c_[uv, np.ones(len(uv))].ravel().tolist()
+
+
 LOCSIM_KEYPOINT_SUBSETS = {
     "body25-3d-locsim": list(range(25)),
     "fifa15-3d-locsim": BODY25_TO_FIFA15,
@@ -183,7 +196,9 @@ def coco_eval(gt_path, res, iou_type, log, exclude=(), locsim_tau=1):
     so that they do not enter the OKS. The iou_types "body25-3d-locsim", "fifa15-3d-locsim" and
     "coco-3d-locsim" use Keypoint3DLocSimCOCOeval, i.e. the mean LocSim (with tau `locsim_tau`
     metres) of the 3D keypoint distances over the visible ground truth joints of the BODY25,
-    FIFA15 or COCO17 subset, in place of the OKS. Detections then need `keypoints_3d`."""
+    FIFA15 or COCO17 subset, in place of the OKS. Detections then need `keypoints_3d`; their 2D
+    `keypoints` are optional and projected from `keypoints_3d` when missing (they only provide
+    the detection area used by the area ranges)."""
     subset = LOCSIM_KEYPOINT_SUBSETS.get(iou_type)
     hidden = set(exclude)
     if subset is not None:
@@ -197,6 +212,9 @@ def coco_eval(gt_path, res, iou_type, log, exclude=(), locsim_tau=1):
                     if a["keypoints"][3 * j + 2] > 0:
                         a["keypoints"][3 * j + 2] = 0
                         a["num_keypoints"] -= 1
+        if subset is not None:
+            res = [d if 'keypoints' in d else dict(d, keypoints=project_keypoints(coco_gt.imgs[d['image_id']], d['keypoints_3d']))
+                   for d in res]
         coco_dt = coco_gt.loadRes(res) if res else COCO()
         if subset is not None:
             ev = Keypoint3DLocSimCOCOeval(coco_gt, coco_dt, "keypoints")

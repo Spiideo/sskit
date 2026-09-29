@@ -1,9 +1,9 @@
 """Keypoint LocSim evaluation on results derived from the mini partition ground truth.
 
 Writes a minimal results file, i.e. one whose detections carry only the keys the evaluation needs
-(`image_id`, `category_id`, `score`, `keypoints`, `keypoints_3d`), with the ground truth people
-perturbed by 3D noise, missed people and false positives, and runs `coco_eval` with the iou_types
-fifa15-3d-locsim, body25-3d-locsim and coco-3d-locsim on it.
+(`image_id`, `category_id`, `score`, `keypoints_3d`; no 2D `keypoints`), with the ground truth
+people perturbed by 3D noise, missed people and false positives, and runs `coco_eval` with the
+iou_types fifa15-3d-locsim, body25-3d-locsim and coco-3d-locsim on it.
 
     python tests/test_keypoint_locsim.py [--gt person_keypoints_mini.json] [--out results.json]
                                          [--sigma 0.1] [--miss 0.1] [--extra 0.05] [--tau 1]
@@ -14,34 +14,23 @@ import os
 from pathlib import Path
 
 import numpy as np
-import torch
 
-from sskit import unnormalize, world_to_image
 from sskit.coco import coco_eval, LOCSIM_KEYPOINT_SUBSETS
 
 GT = Path(os.environ.get("SSKIT_MINI_KEYPOINTS",
                          "/home/hakan/data/SoccerNet/SpiideoSynLoc/annotations/person_keypoints_mini.json"))
-RESULT_KEYS = {"image_id", "category_id", "score", "keypoints", "keypoints_3d"}
-
-
-def project(image, pts):
-    """World (N, 3) -> pixels (N, 2) in the image, sskit convention (principal point ((w-1)/2, (h-1)/2))."""
-    pkt = torch.as_tensor(pts, dtype=torch.float32).reshape(-1, 3)
-    uv = world_to_image(torch.tensor(image["camera_matrix"]), torch.tensor(image["dist_poly"]), pkt)
-    return unnormalize(uv, (3, image["height"], image["width"])).numpy()
+RESULT_KEYS = {"image_id", "category_id", "score", "keypoints_3d"}
 
 
 def detection(image, kp3, score):
-    kp2 = np.c_[project(image, kp3), np.ones(len(kp3))]
     return dict(image_id=image["id"], category_id=1, score=float(score),
-                keypoints=[round(float(x), 2) for x in kp2.ravel()],
                 keypoints_3d=[round(float(x), 4) for x in kp3.ravel()])
 
 
 def perturbed_results(gt, rng, sigma=0.1, miss=0.1, extra=0.05):
-    """Detections from the ground truth: 3D keypoints with N(0, sigma) metres of noise and the 2D
-    keypoints re-projected, a fraction `miss` of the people dropped, and `extra` false positives
-    per ground truth person (copies of random people moved elsewhere on the pitch)."""
+    """Detections from the ground truth: 3D keypoints with N(0, sigma) metres of noise, a fraction
+    `miss` of the people dropped, and `extra` false positives per ground truth person (copies of
+    random people moved elsewhere on the pitch)."""
     images = {im["id"]: im for im in gt["images"]}
     anns = gt["annotations"]
     res = []
