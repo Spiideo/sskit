@@ -16,6 +16,9 @@ BODY25_PAIRS = [(1, 8), (1, 2), (1, 5), (2, 3), (3, 4), (5, 6), (6, 7), (8, 9), 
 # From FIFA starter kit, https://github.com/FIFA-Skeletal-Light-Tracking-Challenge/FIFA-Skeletal-Tracking-Starter-Kit-2026:
 # The 15 FIFA15 joints as BODY25 indices.
 BODY25_TO_FIFA15 = [0, 2, 5, 3, 6, 4, 7, 9, 12, 10, 13, 11, 14, 22, 19]
+# The 17 COCO joints (nose, eyes, ears, shoulders, elbows, wrists, hips, knees, ankles; left before right)
+# as BODY25 indices.
+BODY25_TO_COCO17 = [0, 16, 15, 18, 17, 5, 2, 6, 3, 7, 4, 12, 9, 13, 10, 14, 11]
 
 ROOT_JOINTS = [9, 12]  # RHip, LHip: the root is their mean on both sides
 

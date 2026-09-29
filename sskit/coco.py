@@ -3,7 +3,11 @@ from xtcocotools.cocoeval import COCOeval
 import contextlib, io
 import numpy as np
 from sskit import image_to_ground
-from sskit.pose import BODY25_NAMES, BODY25_SIGMAS
+from sskit.pose import BODY25_NAMES, BODY25_SIGMAS, BODY25_TO_FIFA15, BODY25_TO_COCO17
+
+def locsim(dist2, tau=1):
+    """LocSim of squared distances: 1 at distance 0, 0.05 at distance tau."""
+    return np.exp(np.log(0.05) * dist2 / tau**2)
 
 class LocSimCOCOeval(COCOeval):
     locsim_tau = 1
@@ -41,8 +45,7 @@ class LocSimCOCOeval(COCOeval):
         aa, bb = np.meshgrid(bev_gt[:,1], bev_dt[:,1])
         dist2 += (aa - bb) ** 2
 
-        locsim = np.exp(np.log(0.05) * dist2 / self.locsim_tau**2)
-        return locsim
+        return locsim(dist2, self.locsim_tau)
 
     def accumulate(self, p=None):
         if p is None:
@@ -85,7 +88,9 @@ class LocSimCOCOeval(COCOeval):
             threshold = self.params.score_threshold
         else:
             i = self.eval['f1_50'].argmax()
-            threshold = (self.eval['scores_50'][i] + self.eval['scores_50'][i+1]) / 2
+            scores = self.eval['scores_50']
+            # midway to the next (lower) score; 0 when the best F1 is reached at the last recall bin
+            threshold = (scores[i] + (scores[i + 1] if i + 1 < len(scores) else 0)) / 2
         i = np.searchsorted(-self.eval['scores_50'], -threshold, 'right') - 1
         stats = [self.eval['precision_50'][i], self.eval['recall_50'][i], self.eval['f1_50'][i], threshold, self.frame_accuracy(threshold)]
         self.stats = np.concatenate([self.stats, stats])
@@ -105,31 +110,83 @@ class BBoxLocSimCOCOeval(LocSimCOCOeval):
         return [bbox_ground(*det['bbox']) for det in dt]
 
 
-def coco_eval(gt_path, res, iou_type, log, exclude=()):
+class Keypoint3DLocSimCOCOeval(LocSimCOCOeval):
+    """Keypoint evaluation (iouType 'keypoints') that matches detections to ground truth on the
+    mean LocSim of the 3D distances between the detected and ground truth `keypoints_3d`, taken
+    over the ground truth keypoints with visibility > 0, instead of on the OKS. `keypoints_3d`
+    holds one [x, y, z] or [x, y, z, 1] row per keypoint (flat or nested)."""
+
+    @staticmethod
+    def get_kp3d(anns):
+        return np.array([np.asarray(a['keypoints_3d'], float).reshape(len(a['keypoints']) // 3, -1)[:, :3]
+                         for a in anns])
+
+    def computeOks(self, imgId, catId):
+        p = self.params
+        gts = self._gts[imgId, catId]
+        dts = self._dts[imgId, catId]
+        inds = np.argsort([-d[self.score_key] for d in dts], kind='mergesort')
+        dts = [dts[i] for i in inds]
+        if len(dts) > p.maxDets[-1]:
+            dts = dts[0:p.maxDets[-1]]
+        if len(gts) == 0 or len(dts) == 0:
+            return []
+        d = self.get_kp3d(dts)
+        ious = np.zeros((len(dts), len(gts)))
+        for j, gt in enumerate(gts):
+            g = self.get_kp3d([gt])[0]
+            vis = np.asarray(gt['keypoints'])[2::3] > 0
+            if vis.any():
+                dist2 = ((d[:, vis] - g[vis]) ** 2).sum(-1)
+                ious[:, j] = locsim(dist2, self.locsim_tau).mean(1)
+        return ious
+
+
+LOCSIM_KEYPOINT_SUBSETS = {
+    "body25-3d-locsim": list(range(25)),
+    "fifa15-3d-locsim": BODY25_TO_FIFA15,
+    "coco-3d-locsim": BODY25_TO_COCO17,
+}
+
+
+def coco_eval(gt_path, res, iou_type, log, exclude=(), locsim_tau=1):
     """xtcocotools evaluation; keypoints listed in `exclude` are marked invisible in the GT
-    so that they do not enter the OKS."""
+    so that they do not enter the OKS. The iou_types "body25-3d-locsim", "fifa15-3d-locsim" and
+    "coco-3d-locsim" use Keypoint3DLocSimCOCOeval, i.e. the mean LocSim (with tau `locsim_tau`
+    metres) of the 3D keypoint distances over the visible ground truth joints of the BODY25,
+    FIFA15 or COCO17 subset, in place of the OKS. Detections then need `keypoints_3d`."""
+    subset = LOCSIM_KEYPOINT_SUBSETS.get(iou_type)
+    hidden = set(exclude)
+    if subset is not None:
+        hidden |= set(range(25)) - set(subset)
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         coco_gt = COCO(gt_path)
-        if iou_type == "keypoints" and exclude:
+        if (iou_type == "keypoints" or subset is not None) and hidden:
             for a in coco_gt.dataset["annotations"]:
-                for j in exclude:
+                for j in hidden:
                     if a["keypoints"][3 * j + 2] > 0:
                         a["keypoints"][3 * j + 2] = 0
                         a["num_keypoints"] -= 1
         coco_dt = coco_gt.loadRes(res) if res else COCO()
-        # xtcocotools takes the OKS sigmas in the constructor (params.kpt_oks_sigmas is ignored)
-        ev = COCOeval(coco_gt, coco_dt, iou_type,
-                      sigmas=BODY25_SIGMAS if iou_type == "keypoints" else None)
+        if subset is not None:
+            ev = Keypoint3DLocSimCOCOeval(coco_gt, coco_dt, "keypoints")
+            ev.locsim_tau = locsim_tau
+        else:
+            # xtcocotools takes the OKS sigmas in the constructor (params.kpt_oks_sigmas is ignored)
+            ev = COCOeval(coco_gt, coco_dt, iou_type,
+                          sigmas=BODY25_SIGMAS if iou_type == "keypoints" else None)
         ev.evaluate()
         ev.accumulate()
         ev.summarize()
     text = buf.getvalue()
     text = text[text.find(" Average Precision"):] if " Average Precision" in text else text
-    note = f", without {', '.join(BODY25_NAMES[j] for j in exclude)}" if iou_type == "keypoints" and exclude else ""
+    note = f", without {', '.join(BODY25_NAMES[j] for j in exclude)}" if exclude and iou_type != "bbox" else ""
     log(f"== COCO {iou_type} ({len(res)} detections{note})\n{text.rstrip()}")
     names = ["AP", "AP50", "AP75", "APs", "APm", "APl", "AR1", "AR10", "AR100", "ARs", "ARm", "ARl"] \
         if iou_type == "bbox" else ["AP", "AP50", "AP75", "APm", "APl", "AR", "AR50", "AR75", "ARm", "ARl"]
+    if subset is not None:
+        names += ["precision_50", "recall_50", "f1_50", "score_threshold", "frame_accuracy"]
     return dict(zip(names, [float(s) for s in ev.stats]))
 
 
