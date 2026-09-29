@@ -117,6 +117,7 @@ from sskit import imshape, make_camera, unnormalize, world_to_image
 from sskit.pose import BODY25_TO_FIFA15
 from smplx.vertex_ids import vertex_ids as _vertex_ids
 from smplx.joint_names import JOINT_NAMES as _smplx_joint_names
+from sskit.pose import BODY25_PAIRS
 
 
 HERE = Path(__file__).resolve().parent
@@ -154,9 +155,6 @@ BODY25_NAMES = ["Nose", "Neck", "RShoulder", "RElbow", "RWrist", "LShoulder", "L
                 "LWrist", "MidHip", "RHip", "RKnee", "RAnkle", "LHip", "LKnee", "LAnkle",
                 "REye", "LEye", "REar", "LEar", "LBigToe", "LSmallToe", "LHeel",
                 "RBigToe", "RSmallToe", "RHeel"]
-BODY25_PAIRS = [(1, 8), (1, 2), (1, 5), (2, 3), (3, 4), (5, 6), (6, 7), (8, 9), (9, 10),
-                (10, 11), (8, 12), (12, 13), (13, 14), (1, 0), (0, 15), (15, 17), (0, 16),
-                (16, 18), (14, 19), (19, 20), (14, 21), (11, 22), (11, 23), (11, 24)]
 
 # SMPL-X canonical frame (Y up, facing +Z) -> Blender armature frame (Z up).
 RX90 = np.array([[1, 0, 0, 0],
@@ -721,23 +719,14 @@ def write_outputs(item: Item, humans: Sequence[Human], body25_3d: np.ndarray, bo
 
 def draw_show(item: Item, body25_2d: np.ndarray, out: Path):
     """Draw the BODY_25 skeletons on rgb.jpg: joints red, face landmarks yellow, feet blue."""
-    from PIL import Image, ImageDraw
+    from torchvision.io import decode_image
+    from sskit import Draw
 
     out.parent.mkdir(parents=True, exist_ok=True)
-    img = Image.open(io.BytesIO(item.read_bytes("rgb.jpg"))).convert("RGB")
-    draw = ImageDraw.Draw(img)
-    colors = ["red"] * 25
-    for i in (0, 15, 16, 17, 18):
-        colors[i] = "yellow"
-    for i in range(19, 25):
-        colors[i] = "deepskyblue"
-    for kp in body25_2d:
-        for a, b in BODY25_PAIRS:
-            draw.line([tuple(kp[a]), tuple(kp[b])], fill="lime", width=2)
-        for i, (u, v) in enumerate(kp[[22,19]]):
-            r = 1
-            draw.ellipse([u - r, v - r, u + r, v + r], fill=colors[i])
-    img.save(str(out))
+    img = decode_image(torch.frombuffer(bytearray(item.read_bytes("rgb.jpg")), dtype=torch.uint8))
+    kps = torch.as_tensor(np.asarray(body25_2d), dtype=torch.float32)
+    draw = Draw(img).skeleton(kps, fill='red')
+    draw.save(str(out))
 
 
 # ---------------------------------------------------------------------------
