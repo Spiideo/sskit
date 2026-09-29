@@ -84,6 +84,9 @@ class LocSimCOCOeval(COCOeval):
 
     def summarize(self):
         super().summarize()
+        self.summarize_locsim()
+
+    def summarize_locsim(self):
         if hasattr(self.params, 'score_threshold'):
             threshold = self.params.score_threshold
         else:
@@ -114,7 +117,33 @@ class Keypoint3DLocSimCOCOeval(LocSimCOCOeval):
     """Keypoint evaluation (iouType 'keypoints') that matches detections to ground truth on the
     mean LocSim of the 3D distances between the detected and ground truth `keypoints_3d`, taken
     over the ground truth keypoints with visibility > 0, instead of on the OKS. `keypoints_3d`
-    holds one [x, y, z] or [x, y, z, 1] row per keypoint (flat or nested)."""
+    holds one [x, y, z] or [x, y, z, 1] row per keypoint (flat or nested). Up to `max_dets`
+    detections per image are evaluated (xtcocotools' keypoint default of 20 is too low for a
+    soccer frame)."""
+
+    def __init__(self, cocoGt=None, cocoDt=None, iouType='keypoints', max_dets=100, **kwargs):
+        super().__init__(cocoGt, cocoDt, iouType, **kwargs)
+        self.params.maxDets = [max_dets]
+
+    def summarize(self):
+        # like xtcocotools' keypoint summary, but for our maxDets instead of the hard-coded 20
+        p = self.params
+        max_dets = p.maxDets[-1]
+
+        def stat(ap, iou_thr=None, area='all'):
+            s = self.eval['precision' if ap else 'recall']
+            if iou_thr is not None:
+                s = s[np.isclose(p.iouThrs, iou_thr)]
+            s = s[..., p.areaRngLbl.index(area), p.maxDets.index(max_dets)]
+            v = np.mean(s[s > -1]) if (s > -1).any() else -1
+            iou = f'{p.iouThrs[0]:0.2f}:{p.iouThrs[-1]:0.2f}' if iou_thr is None else f'{iou_thr:0.2f}'
+            print(f' {"Average Precision" if ap else "Average Recall":<18} {"(AP)" if ap else "(AR)"} '
+                  f'@[ IoU={iou:<9} | area={area:>6s} | maxDets={max_dets:>3d} ] = {v: 0.3f}')
+            return v
+
+        self.stats = np.array([stat(1), stat(1, .5), stat(1, .75), stat(1, area='medium'), stat(1, area='large'),
+                               stat(0), stat(0, .5), stat(0, .75), stat(0, area='medium'), stat(0, area='large')])
+        self.summarize_locsim()
 
     @staticmethod
     def get_kp3d(anns):
