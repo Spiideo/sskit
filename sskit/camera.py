@@ -98,9 +98,14 @@ def project_on_ground(camera_matrix, dist_poly, image, width=70, height=120, res
     grid = world_to_image(camera_matrix, dist_poly, pkt).reshape(gnd.shape)
     return sample_image(image, grid[None], padding_mode=padding_mode)
 
-def undistort_image(dist_poly, image, zoom:float=1.0, padding_mode: str = "zeros"):
+def undistort_image(dist_poly, image, zoom:float=1.0, padding_mode: str = "zeros", width: int = None, height: int = None):
+    """Pinhole view of `image` (1, C, H, W) with focal length zoom * W pixels: output pixel (u, v)
+    looks along the undistorted normalised direction ((u, v) - c) / (W * zoom), c the centre of the
+    output. The output is width x height pixels, by default the input size, which crops the corners
+    of a wide-angle image at zoom < 1; a larger output keeps them."""
     h, w = image.shape[-2:]
-    grid = (grid2d(w, h) - torch.tensor([(w-1)/2, (h-1)/2])).to(image.device) / w / zoom
+    ow, oh = int(width or w), int(height or h)   # numpy ints would make the grid float64
+    grid = (grid2d(ow, oh) - torch.tensor([(ow-1)/2, (oh-1)/2])).to(image.device) / w / zoom
     dgrid = distort(dist_poly, grid)
     return sample_image(image, dgrid[None], padding_mode=padding_mode)
 

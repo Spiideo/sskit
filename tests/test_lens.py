@@ -46,3 +46,25 @@ def test_no_jump_next_to_axis():
 def test_round_trip():
     pkt = torch.tensor(np.random.default_rng(0).uniform(-0.4, 0.4, (50, 2)))
     np.testing.assert_allclose(distort(DIST_POLY, undistort(UNDIST_POLY, pkt)).numpy(), pkt.numpy(), atol=2e-3)
+
+
+def test_undistort_image_size():
+    """Resampling coordinate ramps returns the sampling coordinates: the output pixel (u, v) of a
+    width x height view reads the input at unnormalize(distort(((u, v) - c_out) / (w * zoom)))."""
+    from sskit import undistort_image, unnormalize
+    from sskit.utils import grid2d
+    w, h, zoom = 64, 48, 0.8
+    poly = torch.tensor([-0.2, 0.0, 1.0, 0.0])                  # r_d = theta - 0.2 theta^3
+    ramps = grid2d(w, h).permute(2, 0, 1)[None]                   # channel 0 = x, 1 = y
+    for width, height in ((None, None), (96, 70), (40, 30), (np.int64(96), np.int64(70))):
+        out = undistort_image(poly, ramps, zoom, width=width, height=height)
+        ow, oh = int(width or w), int(height or h)
+        assert out.shape == (1, 2, oh, ow)
+        n = (grid2d(ow, oh) - torch.tensor([(ow - 1) / 2, (oh - 1) / 2])) / w / zoom
+        want = unnormalize(distort(poly, n), (2, h, w)).permute(2, 0, 1)
+        inside = (want[0] >= 0) & (want[0] <= w - 1) & (want[1] >= 0) & (want[1] <= h - 1)
+        assert torch.allclose(out[0][:, inside], want[:, inside], atol=1e-3)
+        outside = (want[0] < -1) | (want[0] > w) | (want[1] < -1) | (want[1] > h)
+        assert (out[0][:, outside] == 0).all()
+    # the default is unchanged: same size and centre as the input
+    assert torch.equal(undistort_image(poly, ramps, zoom), undistort_image(poly, ramps, zoom, width=w, height=h))
