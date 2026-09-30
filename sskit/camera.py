@@ -98,16 +98,36 @@ def project_on_ground(camera_matrix, dist_poly, image, width=70, height=120, res
     grid = world_to_image(camera_matrix, dist_poly, pkt).reshape(gnd.shape)
     return sample_image(image, grid[None], padding_mode=padding_mode)
 
-def undistort_image(dist_poly, image, zoom:float=1.0, padding_mode: str = "zeros", width: int = None, height: int = None):
-    """Pinhole view of `image` (1, C, H, W) with focal length zoom * W pixels: output pixel (u, v)
-    looks along the undistorted normalised direction ((u, v) - c) / (W * zoom), c the centre of the
-    output. The output is width x height pixels, by default the input size, which crops the corners
-    of a wide-angle image at zoom < 1; a larger output keeps them."""
+def undistort_image(dist_poly, image, zoom: float = 1.0, padding_mode: str = "zeros", output_size=None,
+                    return_k: bool = False, undist_poly=None):
+    """Pinhole view of `image` (1, C, H, W) with focal length f = zoom * W pixels: output pixel (u, v)
+    looks along the undistorted normalised direction ((u, v) - c) / f, c the centre of the output.
+    output_size: None for the input size (which crops the corners of a wide-angle image at zoom < 1),
+    (width, height) in pixels, or 'full' for the smallest centred view holding the whole input (the
+    input border is traced through `undist_poly`, which is then required). With return_k=True the
+    intrinsic matrix [[f, 0, cx], [0, f, cy], [0, 0, 1]] of the view is returned as well."""
     h, w = image.shape[-2:]
-    ow, oh = int(width or w), int(height or h)   # numpy ints would make the grid float64
-    grid = (grid2d(ow, oh) - torch.tensor([(ow-1)/2, (oh-1)/2])).to(image.device) / w / zoom
-    dgrid = distort(dist_poly, grid)
-    return sample_image(image, dgrid[None], padding_mode=padding_mode)
+    f = w * zoom
+    if output_size is None:
+        ow, oh = w, h
+    elif isinstance(output_size, str) and output_size == "full":
+        if undist_poly is None:
+            raise ValueError("output_size='full' needs undist_poly")
+        xs, ys = torch.arange(w, dtype=torch.float64), torch.arange(h, dtype=torch.float64)
+        border = torch.cat([torch.stack([xs, torch.zeros_like(xs)], -1), torch.stack([xs, torch.full_like(xs, h - 1)], -1),
+                            torch.stack([torch.zeros_like(ys), ys], -1), torch.stack([torch.full_like(ys, w - 1), ys], -1)])
+        ex, ey = (undistort(undist_poly, normalize(border, (1, h, w))) * f).abs().amax(0).ceil().long().tolist()
+        ow, oh = 2 * ex + 1, 2 * ey + 1
+    else:
+        ow, oh = map(int, output_size)   # numpy ints would make the grid float64
+    center = torch.tensor([(ow - 1) / 2, (oh - 1) / 2])
+    grid = (grid2d(ow, oh) - center).to(image.device) / f
+    dgrid = distort(dist_poly, grid).to(image.dtype)
+    out = sample_image(image, dgrid[None], padding_mode=padding_mode)
+    if not return_k:
+        return out
+    K = torch.tensor([[f, 0, center[0]], [0, f, center[1]], [0, 0, 1]], dtype=torch.as_tensor(dist_poly).dtype, device=image.device)
+    return out, K
 
 def get_pan_tilt_from_direction(direction):
     direction = torch.as_tensor(direction)
