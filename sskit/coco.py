@@ -114,6 +114,43 @@ class BBoxLocSimCOCOeval(LocSimCOCOeval):
         return [bbox_ground(*det['bbox']) for det in dt]
 
 
+def summarize_keypoints(ev):
+    """xtcocotools' keypoint summary (AP, AP50, AP75, APm, APl, AR, AR50, AR75, ARm, ARl) of a
+    run COCOeval `ev`, but for ev.params.maxDets[-1] instead of its hard-coded 20 detections
+    per image. Prints the lines in xtcocotools' format and returns the stats array."""
+    p = ev.params
+    max_dets = p.maxDets[-1]
+
+    def stat(ap, iou_thr=None, area='all'):
+        s = ev.eval['precision' if ap else 'recall']
+        if iou_thr is not None:
+            s = s[np.isclose(p.iouThrs, iou_thr)]
+        s = s[..., p.areaRngLbl.index(area), p.maxDets.index(max_dets)]
+        v = np.mean(s[s > -1]) if (s > -1).any() else -1
+        iou = f'{p.iouThrs[0]:0.2f}:{p.iouThrs[-1]:0.2f}' if iou_thr is None else f'{iou_thr:0.2f}'
+        print(f' {"Average Precision" if ap else "Average Recall":<18} {"(AP)" if ap else "(AR)"} '
+              f'@[ IoU={iou:<9} | area={area:>6s} | maxDets={max_dets:>3d} ] = {v: 0.3f}')
+        return v
+
+    return np.array([stat(1), stat(1, .5), stat(1, .75), stat(1, area='medium'), stat(1, area='large'),
+                     stat(0), stat(0, .5), stat(0, .75), stat(0, area='medium'), stat(0, area='large')])
+
+
+class KeypointCOCOeval(COCOeval):
+    """xtcocotools' keypoint (OKS) evaluation with up to `max_dets` detections per image instead
+    of its hard-coded 20, which is too low for a soccer frame (up to 28 annotated people plus
+    spectators and staff in SynLoc): with 20, the detections ranked below the 20th by score are
+    dropped before matching, so an image's remaining people count as misses. 100 is the COCO
+    default for boxes and what the LocSim evaluators use."""
+
+    def __init__(self, cocoGt=None, cocoDt=None, iouType='keypoints', max_dets=100, **kwargs):
+        super().__init__(cocoGt, cocoDt, iouType, **kwargs)
+        self.params.maxDets = [max_dets]
+
+    def summarize(self):
+        self.stats = summarize_keypoints(self)
+
+
 class Keypoint3DLocSimCOCOeval(LocSimCOCOeval):
     """Keypoint evaluation (iouType 'keypoints') that matches detections to ground truth on the
     mean LocSim of the 3D distances between the detected and ground truth `keypoints_3d`, taken
@@ -128,23 +165,7 @@ class Keypoint3DLocSimCOCOeval(LocSimCOCOeval):
         self.params.maxDets = [max_dets]
 
     def summarize(self):
-        # like xtcocotools' keypoint summary, but for our maxDets instead of the hard-coded 20
-        p = self.params
-        max_dets = p.maxDets[-1]
-
-        def stat(ap, iou_thr=None, area='all'):
-            s = self.eval['precision' if ap else 'recall']
-            if iou_thr is not None:
-                s = s[np.isclose(p.iouThrs, iou_thr)]
-            s = s[..., p.areaRngLbl.index(area), p.maxDets.index(max_dets)]
-            v = np.mean(s[s > -1]) if (s > -1).any() else -1
-            iou = f'{p.iouThrs[0]:0.2f}:{p.iouThrs[-1]:0.2f}' if iou_thr is None else f'{iou_thr:0.2f}'
-            print(f' {"Average Precision" if ap else "Average Recall":<18} {"(AP)" if ap else "(AR)"} '
-                  f'@[ IoU={iou:<9} | area={area:>6s} | maxDets={max_dets:>3d} ] = {v: 0.3f}')
-            return v
-
-        self.stats = np.array([stat(1), stat(1, .5), stat(1, .75), stat(1, area='medium'), stat(1, area='large'),
-                               stat(0), stat(0, .5), stat(0, .75), stat(0, area='medium'), stat(0, area='large')])
+        self.stats = summarize_keypoints(self)
         self.summarize_locsim()
 
     @staticmethod
@@ -191,14 +212,16 @@ LOCSIM_KEYPOINT_SUBSETS = {
 }
 
 
-def coco_eval(gt_path, res, iou_type, log, exclude=(), locsim_tau=1):
+def coco_eval(gt_path, res, iou_type, log, exclude=(), locsim_tau=1, max_dets=100):
     """xtcocotools evaluation; keypoints listed in `exclude` are marked invisible in the GT
     so that they do not enter the OKS. The iou_types "body25-3d-locsim", "fifa15-3d-locsim" and
     "coco-3d-locsim" use Keypoint3DLocSimCOCOeval, i.e. the mean LocSim (with tau `locsim_tau`
     metres) of the 3D keypoint distances over the visible ground truth joints of the BODY25,
     FIFA15 or COCO17 subset, in place of the OKS. Detections then need `keypoints_3d`; their 2D
     `keypoints` are optional and projected from `keypoints_3d` when missing (they only provide
-    the detection area used by the area ranges)."""
+    the detection area used by the area ranges). The keypoint and LocSim evaluations score up to
+    `max_dets` detections per image (xtcocotools' 20 for keypoints drops the lower-ranked
+    detections of a crowded frame); "bbox" keeps xtcocotools' [1, 10, 100]."""
     subset = LOCSIM_KEYPOINT_SUBSETS.get(iou_type)
     hidden = set(exclude)
     if subset is not None:
@@ -217,12 +240,13 @@ def coco_eval(gt_path, res, iou_type, log, exclude=(), locsim_tau=1):
                    for d in res]
         coco_dt = coco_gt.loadRes(res) if res else COCO()
         if subset is not None:
-            ev = Keypoint3DLocSimCOCOeval(coco_gt, coco_dt, "keypoints")
+            ev = Keypoint3DLocSimCOCOeval(coco_gt, coco_dt, "keypoints", max_dets=max_dets)
             ev.locsim_tau = locsim_tau
-        else:
+        elif iou_type == "keypoints":
             # xtcocotools takes the OKS sigmas in the constructor (params.kpt_oks_sigmas is ignored)
-            ev = COCOeval(coco_gt, coco_dt, iou_type,
-                          sigmas=BODY25_SIGMAS if iou_type == "keypoints" else None)
+            ev = KeypointCOCOeval(coco_gt, coco_dt, "keypoints", max_dets=max_dets, sigmas=BODY25_SIGMAS)
+        else:
+            ev = COCOeval(coco_gt, coco_dt, iou_type)
         ev.evaluate()
         ev.accumulate()
         ev.summarize()
