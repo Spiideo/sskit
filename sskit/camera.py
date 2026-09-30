@@ -24,21 +24,26 @@ def undistorted_to_ground(camera_matrix, pkt):
     pkt = to_cartesian(torch.matmul(to_homogeneous(pkt), hom.mT))
     return torch.cat([pkt, torch.zeros_like(pkt[..., 0:1])], -1)
 
+def _rescale(pkt, rr_in, rr_out, eps=1e-12):
+    """pkt scaled from radius rr_in to radius rr_out. The denominator is clamped to eps so that the
+    optical axis (rr_in == 0) maps to itself instead of 0 / 0 = nan, and so that a polynomial with
+    a nonzero constant term (rr_out(0) != 0) does not turn rounding noise next to the axis into a
+    jump of rr_out(0)."""
+    return rr_out / rr_in.clamp_min(eps) * pkt
+
 def distort(poly, pkt):
     pkt = torch.as_tensor(pkt)
     poly = torch.as_tensor(poly)
     rr = (pkt ** 2).sum(-1, keepdim=True).sqrt()
     rr2 = polyval(poly, torch.arctan(rr))
-    scale = rr2 / rr
-    return scale * pkt
+    return _rescale(pkt, rr, rr2)
 
 def undistort(poly, pkt):
     pkt = torch.as_tensor(pkt)
     poly = torch.as_tensor(poly)
     rr2 = (pkt ** 2).sum(-1, keepdim=True).sqrt()
     rr = torch.tan(polyval(poly, rr2))
-    scale = rr / rr2
-    return scale * pkt
+    return _rescale(pkt, rr2, rr)
 
 
 def polyval(poly, pkt):
