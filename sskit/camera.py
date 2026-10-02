@@ -32,6 +32,8 @@ def _rescale(pkt, rr_in, rr_out, eps=1e-12):
     return rr_out / rr_in.clamp_min(eps) * pkt
 
 def distort(poly, pkt):
+    if isinstance(poly, Spherical):
+        return distort_spherical(pkt, poly.fov)
     pkt = torch.as_tensor(pkt)
     poly = torch.as_tensor(poly)
     rr = (pkt ** 2).sum(-1, keepdim=True).sqrt()
@@ -39,12 +41,36 @@ def distort(poly, pkt):
     return _rescale(pkt, rr, rr2)
 
 def undistort(poly, pkt):
+    if isinstance(poly, Spherical):
+        return undistort_spherical(pkt, poly.fov)
     pkt = torch.as_tensor(pkt)
     poly = torch.as_tensor(poly)
     rr2 = (pkt ** 2).sum(-1, keepdim=True).sqrt()
     rr = torch.tan(polyval(poly, rr2))
     return _rescale(pkt, rr2, rr)
 
+SPHERICAL_CLIPPING_ANGLE = 0.499 * np.pi
+
+class Spherical:
+    """Spherical lens model, usable in place of a distortion / undistortion polynomial. The image
+    x-axis spans the horizontal field of view `fov` radians, i.e. focal length W / fov pixels, with
+    the same focal length vertically."""
+    def __init__(self, fov=np.pi):
+        self.fov = fov
+
+def distort_spherical(pkt, fov=np.pi):
+    """Undistorted normalised points (x, y) to normalised image points (pan, tilt) / fov, with
+    pan = arctan(x), tilt = arctan(y / sqrt(x^2 + 1)) in radians. Only valid in front of the camera."""
+    pkt = torch.as_tensor(pkt)
+    x, y = pkt[..., 0], pkt[..., 1]
+    return torch.stack([torch.arctan(x), torch.arctan(y / torch.sqrt(x ** 2 + 1))], -1) / fov
+
+def undistort_spherical(pkt, fov=np.pi):
+    """Inverse of distort_spherical. The angles are clipped to +-SPHERICAL_CLIPPING_ANGLE to stay
+    away from the singularity at +-pi/2."""
+    pkt = (torch.as_tensor(pkt) * fov).clamp(-SPHERICAL_CLIPPING_ANGLE, SPHERICAL_CLIPPING_ANGLE)
+    x, y = pkt[..., 0], pkt[..., 1]
+    return torch.stack([torch.tan(x), torch.tan(y) / torch.cos(x)], -1)
 
 def polyval(poly, pkt):
     sa = poly[..., 0:1]
@@ -126,7 +152,7 @@ def undistort_image(dist_poly, image, zoom: float = 1.0, padding_mode: str = "ze
     out = sample_image(image, dgrid[None], padding_mode=padding_mode)
     if not return_k:
         return out
-    K = torch.tensor([[f, 0, center[0]], [0, f, center[1]], [0, 0, 1]], dtype=torch.as_tensor(dist_poly).dtype, device=image.device)
+    K = torch.tensor([[f, 0, center[0]], [0, f, center[1]], [0, 0, 1]], dtype=torch.get_default_dtype() if isinstance(dist_poly, Spherical) else torch.as_tensor(dist_poly).dtype, device=image.device)
     return out, K
 
 def get_pan_tilt_from_direction(direction):

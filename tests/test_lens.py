@@ -86,3 +86,12 @@ def test_undistort_image_output_size():
         assert False, "needs undist_poly"
     except ValueError:
         pass
+
+
+def test_spherical_round_trip():
+    from sskit import distort_spherical, undistort_spherical
+    pkt = torch.tensor([[0.0, 0.0], [0.3, -0.2], [-2.0, 1.5], [5.0, 0.1]], dtype=torch.float64)
+    ang = distort_spherical(pkt)
+    np.testing.assert_allclose(ang[:, 0].numpy(), np.arctan(pkt[:, 0].numpy()) / np.pi)
+    np.testing.assert_allclose(undistort_spherical(ang).numpy(), pkt.numpy(), rtol=1e-12, atol=1e-12)
+    assert torch.isfinite(undistort_spherical(torch.tensor([[0.5, 0.5]]))).all()
