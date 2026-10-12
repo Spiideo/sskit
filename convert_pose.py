@@ -56,10 +56,13 @@ the output, or ``--coco-images``; list line ``i`` is image ``i``, verified via
 the camera matrix) and, per human, the ``id``, ``bbox``, ``area`` and
 ``position_on_pitch`` of the matching bbox annotation, adding flat COCO
 ``keypoints`` (25 x ``[u, v, v_flag]``), ``keypoints_3d`` (25 x ``[x, y, z, 1]``,
-world metres) and ``num_keypoints``. Keypoints projecting outside the image
-get ``v_flag = 0`` (and ``u = v = 0``), the others ``v_flag = 2``; humans with
-none of the 15 FIFA joints (``sskit.pose.BODY25_TO_FIFA15``) inside the image
-are dropped. The category carries the BODY_25 keypoint names and skeleton.
+world metres) and ``num_keypoints``. ``v_flag`` is 2 for visible keypoints, 1 for
+occluded ones and 0 for keypoints projecting outside the image (which keep
+their u, v); occlusion comes from
+a depth test against the fitted SMPL-X meshes (``smplx_params.npz``) of all
+humans of the image, see ``Occlusion``. Humans with none of the 15 FIFA joints
+(``sskit.pose.BODY25_TO_FIFA15``) inside the image are dropped. The category
+carries the BODY_25 keypoint names and skeleton.
 
 Usage::
 
@@ -113,7 +116,7 @@ import torch
 from scipy.spatial.transform import Rotation
 from tqdm import tqdm
 
-from sskit import imshape, make_camera, unnormalize, world_to_image
+from sskit import camera_position, imshape, make_camera, unnormalize, world_to_image
 from sskit.pose import BODY25_TO_FIFA15
 from smplx.vertex_ids import vertex_ids as _vertex_ids
 from smplx.joint_names import JOINT_NAMES as _smplx_joint_names
@@ -183,7 +186,7 @@ ARCHIVE_SUFFIX = ".tar.bz2"
 LOCK_FILE = ".convert_pose.lock"
 # Members kept in memory (zlib compressed) for every archive of the run; other members are
 # read by rescanning the archive when needed (segmentations for unmatched humans, --show).
-CACHED_MEMBERS = {"objects.json", "camera_matrix.npy", "lens.json", "areas_cache.json", OUTPUT_JSON}
+CACHED_MEMBERS = {"objects.json", "camera_matrix.npy", "lens.json", "areas_cache.json", OUTPUT_JSON, OUTPUT_NPZ}
 IMAGE_MEMBER = "rgb.jpg"
 
 
@@ -750,7 +753,105 @@ def object_area(item: Item, key: str, obj: dict, seg_cache: dict) -> int:
     return seg_cache["areas"][key]
 
 
-def write_coco(coco_out: Path, coco_images: Path, list_file: Path, items: List[Item]):
+class Occlusion:
+    """Per-keypoint visibility from a depth test against the fitted SMPL-X meshes (smplx_params.npz)
+    of all humans of an image: the meshes are projected with the image's camera and, for every
+    keypoint, the frontmost mesh surface on its pixel is found (a z-buffer read at the keypoint, with
+    distances to the camera centre as depth). Naked bodies only: clothing, hair and the ball, goals
+    etc. do not occlude.
+
+    The 11 surface landmarks (nose, eyes, ears, toes, heels) are visible when no surface lies more
+    than SURFACE_EPS in front of them. The 14 joints lie inside the body, behind their own skin, so
+    they are also visible when the frontmost surface belongs to the same human's body parts next to
+    the joint (the skinning part of the joint, its parent or its children) and lies at most
+    JOINT_EPS in front: a hip seen from behind is visible, a wrist behind the torso is not."""
+
+    SURFACE_EPS = 0.03  # metres
+    JOINT_EPS = 0.25
+
+    def __init__(self, model_paths: Dict[str, Path], device):
+        BodyModel = import_hbp()[0]
+        self.device = device
+        self.bms = {g: BodyModel(str(p), num_betas=NUM_BETAS).to(device) for g, p in model_paths.items()}
+        bm = next(iter(self.bms.values()))
+        self.faces = bm.f.long()
+        self.num_verts = bm.init_v_template.shape[1]
+        # body part of each face: the joint with the largest skinning weight summed over its corners
+        self.face_part = bm.weights[self.faces].sum(1).argmax(-1)
+        parents = bm.kintree_table[0].long().tolist()
+        smplx_idx = torch.tensor(BODY25_FROM_SMPLX, device=device)
+        self.surface = smplx_idx >= NUM_JOINTS
+        self.own = torch.zeros(25, NUM_JOINTS, dtype=torch.bool, device=device)  # parts next to each joint
+        for b, j in enumerate(BODY25_FROM_SMPLX):
+            if j < NUM_JOINTS:
+                self.own[b, [j] + [parents[j]] * (j > 0) + [c for c in range(NUM_JOINTS) if parents[c] == j and c > 0]] = True
+
+    def meshes(self, params, keys: Sequence[str]) -> torch.Tensor:
+        """World vertices (P, V, 3) of the humans `keys` from the loaded smplx_params.npz."""
+        index = {k: i for i, k in enumerate(params["object_key"].tolist())}
+        rows = np.array([index[k] for k in keys])
+        verts = torch.empty(len(rows), self.num_verts, 3, device=self.device)
+        genders = params["gender"][rows]
+        for gender, bm in self.bms.items():
+            sel = np.flatnonzero(genders == gender)
+            if not len(sel):
+                continue
+            arg = lambda name: torch.as_tensor(params[name][rows[sel]], dtype=torch.float32, device=self.device)
+            with torch.no_grad():
+                v = bm(root_orient=arg("global_orient"), pose_body=arg("body_pose"), betas=arg("betas"), trans=arg("transl")).v
+            to_world = torch.as_tensor(params["to_world"][rows[sel]], dtype=torch.float32, device=self.device)
+            verts[sel] = v @ to_world[:, :3, :3].mT + to_world[:, None, :3, 3]
+        return verts
+
+    def visible(self, item: Item, keys: Sequence[str], kp3d: np.ndarray) -> np.ndarray:
+        """(P, 25) bool visibility of the world keypoints `kp3d` (P, 25, 3) of the humans `keys`."""
+        params = np.load(io.BytesIO(item.read_bytes(OUTPUT_NPZ)))
+        camera_matrix, dist_poly, _ = make_camera(np.load(io.BytesIO(item.read_bytes("camera_matrix.npy"))),
+                                                  item.read_json("lens.json"))
+        camera_matrix, dist_poly = camera_matrix.to(self.device), dist_poly.to(self.device)
+        centre = camera_position(camera_matrix)[:, 0]
+        shape = item.image_shape()
+        P = len(keys)
+
+        def to_image(pts):
+            return unnormalize(world_to_image(camera_matrix, dist_poly, pts), shape), (pts - centre).norm(dim=-1)
+
+        verts = self.meshes(params, keys)
+        v_uv, v_depth = to_image(verts)                                   # (P, V, 2), (P, V)
+        k_uv, k_depth = to_image(torch.as_tensor(kp3d, dtype=torch.float32, device=self.device))
+        k_uv, k_depth = k_uv.reshape(-1, 2), k_depth.reshape(-1)          # (P*25, ...)
+        front = torch.full_like(k_depth, float("inf"))                    # depth of the frontmost surface
+        front_human = torch.full_like(k_depth, -1, dtype=torch.long)
+        front_part = torch.zeros_like(front_human)
+        for o in range(P):
+            lo, hi = v_uv[o].amin(0), v_uv[o].amax(0)
+            cand = torch.nonzero(((k_uv >= lo) & (k_uv <= hi)).all(-1))[:, 0]
+            if not len(cand):
+                continue
+            tri, tri_depth = v_uv[o][self.faces], v_depth[o][self.faces]  # (F, 3, 2), (F, 3)
+            e1, e2 = tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]
+            det = e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0]
+            ok = det.abs() > 1e-9
+            d = k_uv[cand, None] - tri[None, :, 0]                        # (K, F, 2)
+            b1 = (d[..., 0] * e2[:, 1] - d[..., 1] * e2[:, 0]) / torch.where(ok, det, 1)
+            b2 = (e1[:, 0] * d[..., 1] - e1[:, 1] * d[..., 0]) / torch.where(ok, det, 1)
+            hit = ok & (b1 >= 0) & (b2 >= 0) & (b1 + b2 <= 1)
+            depth = tri_depth[:, 0] + b1 * (tri_depth[:, 1] - tri_depth[:, 0]) + b2 * (tri_depth[:, 2] - tri_depth[:, 0])
+            depth, face = torch.where(hit, depth, float("inf")).min(-1)
+            closer = depth < front[cand]
+            idx = cand[closer]
+            front[idx] = depth[closer]
+            front_human[idx] = o
+            front_part[idx] = self.face_part[face[closer]]
+
+        front, front_human, front_part, k_depth = (t.reshape(P, 25) for t in (front, front_human, front_part, k_depth))
+        own_part = (front_human == torch.arange(P, device=self.device)[:, None]) & \
+            self.own[torch.arange(25, device=self.device), front_part] & ~self.surface
+        vis = (front >= k_depth - self.SURFACE_EPS) | (own_part & (front >= k_depth - self.JOINT_EPS))
+        return vis.cpu().numpy()
+
+
+def write_coco(coco_out: Path, coco_images: Path, list_file: Path, items: List[Item], occlusion: Occlusion):
     """Collect the per-item openpose_body25.json files of `items` (in list order) into one COCO
     keypoint style file that references the images of the bbox annotation file `coco_images`."""
     ref = json.loads(coco_images.read_text())
@@ -761,7 +862,7 @@ def write_coco(coco_out: Path, coco_images: Path, list_file: Path, items: List[I
         ref_anns.setdefault(a["image_id"], []).append(a)
 
     annotations, next_id = [], max((a["id"] for a in ref["annotations"]), default=-1) + 1
-    n_missing = n_unmatched = n_outside = 0
+    n_missing = n_unmatched = n_outside = n_visible = n_keypoints = 0
     for image, item in zip(ref["images"], items):
         if not item.exists(OUTPUT_JSON):
             n_missing += 1
@@ -775,16 +876,19 @@ def write_coco(coco_out: Path, coco_images: Path, list_file: Path, items: List[I
         candidates = list(ref_anns.get(image["id"], []))
         seg_cache: dict = {}
         _, height, width = item.image_shape()
-        for person in people:
+        visible = occlusion.visible(item, [p["object_key"] for p in people],
+                                    np.array([p["pose_keypoints_3d"] for p in people]).reshape(-1, 25, 4)[..., :3])
+        for person, vis in zip(people, visible):
             kp2 = np.array(person["pose_keypoints_2d"]).reshape(25, 3)
             kp3 = np.array(person["pose_keypoints_3d"]).reshape(25, 4)
-            # COCO visibility flag: 2 = labelled and visible (occlusion is not evaluated), 0 = outside the image
+            # COCO visibility flag: 2 = visible, 1 = occluded (z-buffer of the fitted meshes), 0 = outside the image
             inside = ((kp2[:, 0] >= 0) & (kp2[:, 0] <= width-1) & (kp2[:, 1] >= 0) & (kp2[:, 1] <= height-1))
             if not inside[BODY25_TO_FIFA15].any():
                 n_outside += 1
                 continue
-            kp2[:, 2] = np.where(inside, 2, 0)
-            kp2[~inside, :2] = 0
+            kp2[:, 2] = np.where(inside, np.where(vis, 2, 1), 0)
+            n_visible += int((kp2[:, 2] == 2).sum())
+            n_keypoints += int(inside.sum())
             obj = objects[person["object_key"]]
             pelvis = np.array(obj["keypoints"]["pelvis"])
             match = next((a for a in candidates if np.allclose(a["keypoints_3d"][0][:3], pelvis, atol=1e-6)), None)
@@ -815,7 +919,9 @@ def write_coco(coco_out: Path, coco_images: Path, list_file: Path, items: List[I
                          skeleton=[[a + 1, b + 1] for a, b in BODY25_PAIRS])],
         info=dict(description="OpenPose BODY_25 keypoints for Spiideo SoccerNet SynLoc, generated by sskit/convert_pose.py "
                               "from SMPL-X fits; keypoints are pixels (principal point ((w-1)/2, (h-1)/2)), keypoints_3d are "
-                              "world/pitch metres with a trailing 1; keypoints outside the image have visibility 0 and u = v = 0; "
+                              "world/pitch metres with a trailing 1; visibility is 2 for visible keypoints, 0 for keypoints "
+                              "outside the image (u, v are kept) and 1 for keypoints occluded according to a z-buffer of the fitted SMPL-X meshes of all "
+                              "humans (naked bodies: clothing, hair, ball and goals are ignored); "
                               "humans with none of the 15 FIFA joints inside the image are omitted; "
                               "MidHip/Neck are the SMPL-X pelvis/neck joints.",
                   source_list=str(list_file), bbox_annotations=str(coco_images)),
@@ -829,7 +935,8 @@ def write_coco(coco_out: Path, coco_images: Path, list_file: Path, items: List[I
     atomic_write(coco_out, dump)
     print(f"wrote {coco_out}: {len(doc['images'])} images, {len(annotations)} annotations "
           f"({n_missing} items without pose output, {n_unmatched} humans without bbox annotation, "
-          f"{n_outside} humans dropped with no FIFA joint inside the image)", file=sys.stderr)
+          f"{n_outside} humans dropped with no FIFA joint inside the image; "
+          f"{100 * n_visible / max(n_keypoints, 1):.1f}% of the keypoints inside the image visible)", file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -949,7 +1056,8 @@ def main(argv=None):
     if todo:
         convert_items(todo, args)
     if args.coco_out is not None:
-        write_coco(args.coco_out, coco_images, Path(args.list[0]), items)
+        model_paths, _ = resolve_assets(args.models_dir)
+        write_coco(args.coco_out, coco_images, Path(args.list[0]), items, Occlusion(model_paths, torch.device(args.device)))
 
 
 def convert_items(todo: List[Item], args):
