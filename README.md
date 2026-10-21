@@ -244,6 +244,73 @@ The 2D keypoints are computed with `unnormalize(world_to_image(...))`, i.e. with
 keypoints in `objects.json` were erroneously produced with the principal point at `(w/2, h/2)` and are
 therefore 0.7 px off; do not mix the two.
 
+## 3D Pose Evaluation
+
+`sskit.pose` evaluates BODY-25 skeletons against a COCO keypoint ground truth of the kind written by
+`convert_pose.py --coco-out` (per annotation `keypoints`, 25 x `[u, v, flag]`, and `keypoints_3d`, 25 x
+`[x, y, z, 1]` in world metres; per image a `camera_matrix`). Predictions are COCO results (`image_id`,
+`score`, `bbox`, `keypoints`) plus a parallel list of dicts with the 3D skeletons (`keypoints_3d`, 25 x
+`[x, y, z]`). Every metric takes a `log` callback for its text report and returns a dict. numpy/scipy only.
+
+```python
+from sskit.pose import eval_3d, eval_orientation, eval_ap_k, eval_neck, eval_visibility, matched_pairs
+
+m3d = eval_3d(gt, dets, kp3d, 0.5, print)                   # MPJPE of the IoU-matched people
+P, G, (n_gt, n_pred) = matched_pairs(gt, dets, kp3d, 0.5)   # the (N, 25, 3) pairs eval_3d scored
+mo = eval_orientation(P, G, print)                          # orientation error of the body axes, degrees
+mn = eval_neck(P, G, print)                                 # Neck convention of both sides
+mk = eval_ap_k(gt, dets, kp3d, print, thresholds=(0.05, 0.10, 0.15))   # VoxelPose AP_K
+mv = eval_visibility(gt, dets, kp3d, print)                 # errors split by the GT visibility flag
+```
+
+* **`eval_3d`** matches predictions to GT people per image by box IoU (Hungarian assignment, pairs with
+  IoU >= `iou_thr`) and reports, in metres, the global MPJPE (world coordinates), the local MPJPE (root
+  aligned; the root is the mean of RHip and LHip on both sides), PA-MPJPE, the root position and the
+  distance-to-camera errors, the FIFA-15 subset with the challenge score global + 5 local, and the
+  per-joint errors. With `midhip="hipmean"` (default) the predicted MidHip is left out of the averages,
+  since hip-midpoint predictors carry no information about the SMPL-X pelvis of the ground truth, and
+  its distance to the GT pelvis is reported separately; `midhip="pelvis"` scores it like any other joint.
+  `matched_pairs` returns the skeletons of the same pairs, `matched_triples` the annotations and
+  detections, and `pose_distance(P, G, use, align)` the MPJPE with `align` none / root / procrustes.
+* **`eval_orientation`** gives, over matched pairs, the angle in degrees between the predicted and the
+  GT direction of each axis of `BODY25_ORIENTATION_AXES`, as the 3D angle (`<axis>_angle_mean`,
+  `_median`) and as the heading difference in the ground plane (z up; `<axis>_heading_mean`, `_median`),
+  the fraction turned by more than 90 degrees (`<axis>_flipped`) and the heading error without them.
+  Both are placement invariant. An axis is `name -> (from joints, to joints)` with the vector
+  `mean(to) - mean(from)`; a facing axis such as ear midpoint -> Nose is a one-line addition.
+* **`eval_ap_k`** is VoxelPose's AP_K (Tu, Wang and Zeng, ECCV 2020), a detection-style metric over
+  *all* predictions: each prediction is assigned the GT skeleton of its image with the smallest global
+  MPJPE, predictions are ranked by score over the whole dataset, a true positive is one whose MPJPE is
+  below K and whose GT skeleton is not yet claimed, and AP_K is the VOC-interpolated area under the
+  precision-recall curve. `global` is the metric of the VoxelPose paper (`voxelpose_ap` is a literal port
+  of its `_eval_list_to_ap`), `root` tests the root-aligned MPJPE of the same assigned pair, i.e. the pose
+  alone once the placement is good enough to pick the right person. Keys `AP5`, `recall5`, ... for K in
+  cm and `mAP` over the thresholds. Unlike the matched-only MPJPEs it charges misses and spurious
+  skeletons. With `flags={2}` only the GT joints with that visibility flag enter the MPJPEs.
+* **`eval_neck`** records where the Neck of each side sits relative to the shoulder midpoint in a body
+  frame (up, left, back) and the root-aligned Neck error with the predicted Neck relocated to the GT
+  offset, i.e. what the predictor's Neck convention costs (the SMPL-X neck joint, the MHR neck joint and
+  the OpenPose shoulder midpoint all differ).
+* **`eval_visibility`** splits the errors of the matched people by the GT visibility flag of each joint
+  (`VISIBILITY_CLASSES`: 2 visible, 1 occluded by a body, 0 outside the image): global, local and PA
+  error, 2D pixel error and the per-joint OKS term per class and per joint, plus the orientation errors
+  of the people whose axis joints are all visible against the rest. `visibility_subset(gt, flags)`
+  restricts a ground truth to the joints of one class (the others unlabelled, as `coco_eval`'s
+  `exclude`), so that `sskit.coco.coco_eval` scores the keypoint AP and the 3D-LocSim AP over those
+  joints only.
+
+The BODY-25 constants of the module:
+
+| constant | content |
+|---|---|
+| `BODY25_NAMES` | the 25 OpenPose joint names, Nose, Neck, RShoulder, ... RHeel |
+| `BODY25_SIGMAS` | OKS sigmas: COCO's 17, COCO-WholeBody foot sigmas for toes and heels, shoulder-like Neck, hip-like MidHip |
+| `BODY25_PAIRS` | the 24 limbs for drawing |
+| `BODY25_TO_FIFA15`, `BODY25_TO_COCO17` | the FIFA Skeletal Tracking (15) and COCO (17) joints as BODY-25 indices |
+| `ROOT_JOINTS` | RHip and LHip, whose mean is the root |
+| `BODY25_ORIENTATION_AXES` | `hips` RHip -> LHip, `shoulders` RShoulder -> LShoulder, `head` REar -> LEar |
+| `VISIBILITY_CLASSES` | `visible` 2, `occluded` 1, `outside` 0 |
+
 ## Camera model
 
 The camera model used in the dataset is a standard projective pihole camera model with radial distortion.
